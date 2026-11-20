@@ -58,7 +58,7 @@ If a block still can't be recovered from the repair that arrived, the receiver c
 
 ## The catalog
 
-With real media, the publisher sends an MSF catalog. The source track is listed as LOC video that an ordinary player can configure a decoder from, with the FEC parameters attached (code, symbol size, objects per block, rung names and fractions, and how objects map onto groups). The repair tracks are listed under an unregistered packaging (`x-fec-repair`), so a player without FEC support skips them.
+With real media, the publisher sends an MSF catalog with one track: the source, listed as LOC video that an ordinary player can configure a decoder from, with the FEC parameters in an `x-fec` field (code, symbol size, objects per block, rung names and fractions, and how objects map onto groups). The repair tracks are not listed: a receiver with FEC support finds them by the rung names in `x-fec` and subscribes to them by name. Listing them would need a packaging, and MSF has none for repair; a stock MSF parser rejects the whole catalog when a track has an unregistered packaging, while it ignores an unknown field such as `x-fec`.
 
 ## Not covered yet
 

@@ -119,8 +119,10 @@ class MediaBlockSchedule(BlockSchedule):
 
 def catalog_json(media: Mp4Gops, *, n_objects: int, gap_s: float, rungs: list[float],
                  symbol_size: int, source: str = "src", object_stride: int = 256) -> bytes:
-    """The MSF catalog: the source track as LOC video Shaka can configure a decoder from, and the
-    repair rungs under an unregistered packaging so a player without the FEC stage skips them."""
+    """The MSF catalog: the source track as LOC video Shaka can configure a decoder from, with the
+    FEC parameters in its x-fec. The repair rungs are not catalog tracks, since a stock MSF parser
+    (Playa's) rejects a catalog with an unregistered packaging: a FEC receiver subscribes to them
+    by the names in x-fec's rungs."""
     from aiomoqt.media.catalog import Catalog, CatalogTrack
     rung_names = [f"rep{r}" for r in range(1, len(rungs) + 1)]
     fec = {"scheme": "rs-cauchy-gf256", "codec": 2, "symbolSize": symbol_size,
@@ -132,9 +134,6 @@ def catalog_json(media: Mp4Gops, *, n_objects: int, gap_s: float, rungs: list[fl
     tracks = [CatalogTrack(name=source, packaging="loc", isLive=True, role="video", renderGroup=1,
                            codec=media.codec, width=media.width, height=media.height,
                            framerate=round(n_objects / gap_s, 3), extra={"x-fec": fec})]
-    for r, name in enumerate(rung_names, 1):
-        tracks.append(CatalogTrack(name=name, packaging="x-fec-repair", isLive=True,
-                                   extra={"x-fec": {"source": source, "rung": r}}))
     cat = Catalog(generatedAt=int(time.time() * 1000), tracks=tracks)
     return cat.to_json().encode()
 
