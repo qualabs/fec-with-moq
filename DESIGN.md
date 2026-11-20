@@ -10,11 +10,12 @@ The relay is unmodified and never learns that FEC exists. Everything here uses o
 
 One namespace (`fecmoq` by default) holds:
 
-1. **The source track** (`src`): the media objects themselves, unchanged in meaning. A player that knows nothing about FEC can play it.
+1. **The source track** (`src`): the media objects the repair protects. They carry FEC framing (with real media, each frame's LOC properties ride inside the payload, and most source mappings cut the block into symbols), so only a player with FEC support can play it.
 2. **The repair tracks** (`rep1`, `rep2`, … `repN`), one per *rung* of a protection ladder.
-3. **The catalog** (`catalog`), when publishing real media: an MSF catalog that describes the source track as LOC video and carries the FEC parameters (see "The catalog").
+3. **The clean track** (`video`), when publishing real media: the same frames as plain CMAF, for players without FEC (see "The clean track").
+4. **The catalog** (`catalog`), when publishing real media: an MSF catalog that describes the clean track and the source track and carries the FEC parameters (see "The catalog").
 
-A subscriber chooses its protection by choosing which repair tracks to SUBSCRIBE to, with nothing else: no feedback to the publisher and no per-receiver state in the relay. A viewer on a clean path takes `src` alone; a viewer on a lossy path adds `rep1`, or `rep1` and `rep2`, and so on. Only the viewers who need protection pay for it in bandwidth.
+A subscriber chooses its protection by choosing which repair tracks to SUBSCRIBE to, with nothing else: no feedback to the publisher and no per-receiver state in the relay. A viewer on a clean path takes `src` alone; a viewer on a lossy path adds `rep1`, or `rep1` and `rep2`, and so on. Only the viewers who need protection pay for it in bandwidth. A player without FEC takes the clean track instead; no player takes both.
 
 ## Blocks and symbols
 
@@ -56,9 +57,19 @@ A receiver can therefore rebuild the symbol layout from any single repair object
 
 If a block still can't be recovered from the repair that arrived, the receiver can FETCH what it is missing (source objects or more repair symbols) from the relay's cache, using ordinary MoQT FETCH. The relay answers from its cache or asks the publisher, which serves FETCH for the source track and every rung over a recent window. Two things follow: the relay must cache the tracks, and how long it keeps them bounds how late a repair can still be fetched.
 
+## The clean track
+
+With real media, the publisher also offers the frames as a standard CMAF track (CMSF, draft-ietf-moq-cmsf-01), so a player without FEC can play the stream. Its objects are each block's frames taken before LOC wrapping and symbolization: one CMAF chunk (moof and mdat, one sample) per object, a MoQ group per GOP numbered as the source track's groups and starting on its keyframe, and the CMAF header in the catalog (`initDataList` and `initRef`). Each chunk's decode time is the frame's LOC timestamp, so the clean track and the source are time-aligned group for group.
+
+Like every track, it is produced only when the relay subscribes upstream, so it costs nothing on the network until a player asks for it; a player subscribes to the clean track or to the source and its repair, never both. First subscribed mid-run, it starts at the next GOP. `relay_fec.py pub --no-clean-track` leaves it out.
+
 ## The catalog
 
-With real media, the publisher sends an MSF catalog with one track: the source, listed as LOC video that an ordinary player can configure a decoder from, with the FEC parameters in an `x-fec` field (code, symbol size, objects per block, rung names and fractions, and how objects map onto groups). The repair tracks are not listed: a receiver with FEC support finds them by the rung names in `x-fec` and subscribes to them by name. Listing them would need a packaging, and MSF has none for repair; a stock MSF parser rejects the whole catalog when a track has an unregistered packaging, while it ignores an unknown field such as `x-fec`.
+With real media, the publisher sends an MSF catalog with two video tracks: the clean track first, as CMAF, and then the source, listed as LOC video with the FEC parameters in an `x-fec` field (code, symbol size, objects per block, rung names and fractions, and how objects map onto groups). The source is alone in alternate group 1; the clean track declares none.
+
+That order and grouping keep each player on its track with no change to either. Stock Playa (0.7.0) plays the first alternate set in catalog order, an ungrouped track being a set of its own, so it plays the clean track. Playa's FEC fork plays the first declared alternate group, so it plays the source, and its FEC stage subscribes to the repair tracks. The choice rests on those two players' selection policies, not on MSF: a player that prefers the first alternate group plays the source and fails, and the source is labelled `loc` although its objects are not LOC. The lasting answer is a registered packaging for the FEC source, with the repair levels in `packagingMetadata` (MSF-02 §5.2.5) and players skipping a packaging they don't know; that needs changes in both Playa builds.
+
+The repair tracks are not listed: a receiver with FEC support finds them by the rung names in `x-fec` and subscribes to them by name. Listing them would need a packaging, and MSF has none for repair; a stock MSF parser rejects the whole catalog when a track has an unregistered packaging, while it ignores an unknown field such as `x-fec`.
 
 ## Not covered yet
 
