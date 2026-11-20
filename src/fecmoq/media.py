@@ -30,6 +30,7 @@ from .moq import BlockSchedule
 LOC_PROP_TIMESTAMP = 0x10        # vi64, µs since the Unix epoch (no TIMESCALE property)
 MAX_OBJECT = 0xFFFF              # the repair header carries sizes as u16
 CLEAN_TRACK = "video"
+CLEAN_INIT = "v0"
 
 
 def encode_properties_d18(props: dict) -> bytes:
@@ -79,9 +80,14 @@ class Mp4Gops:
         self.video = v
         self.codec, self.width, self.height, self.fps = v.codec_string, v.width, v.height, v.fps
         self.largest = max(len(p) for p, _ in samples)
+        self.mean_frame = sum(len(p) for p, _ in samples[:whole]) / whole
 
     def block(self, i: int) -> list[tuple[bytes, bool]]:
         return self.blocks[i % len(self.blocks)]
+
+    def cmaf_header(self) -> bytes:
+        from aiomoqt.media.cmaf import CmafChunker
+        return CmafChunker(self.video).init_segment()
 
 
 class MediaBlockSchedule(BlockSchedule):
@@ -164,23 +170,35 @@ class CmafTrack(PublishedTrack):
 
 
 def catalog_json(media: Mp4Gops, *, n_objects: int, gap_s: float, rungs: list[float],
-                 symbol_size: int, source: str = "src", object_stride: int = 256) -> bytes:
+                 symbol_size: int, source: str = "src", object_stride: int = 256,
+                 clean: str | None = None) -> bytes:
     """The MSF catalog: the source track as LOC video Shaka can configure a decoder from, with the
     FEC parameters in its x-fec. The repair rungs are not catalog tracks, since a stock MSF parser
     (Playa's) rejects a catalog with an unregistered packaging: a FEC receiver subscribes to them
-    by the names in x-fec's rungs."""
-    from aiomoqt.media.catalog import Catalog, CatalogTrack
+    by the names in x-fec's rungs.
+
+    With `clean`, the clean CMAF track comes first, ungrouped, and the source goes alone into
+    altGroup 1: stock Playa (0.7.0) plays the first alternate set in catalog order, Playa's FEC
+    fork the first declared altGroup (DESIGN.md, "The clean track")."""
+    from aiomoqt.media.catalog import Catalog, CatalogTrack, InitData
     rung_names = [f"rep{r}" for r in range(1, len(rungs) + 1)]
+    framerate = round(n_objects / gap_s, 3)
+    bitrate = round(8 * media.mean_frame * framerate)
+    video = dict(isLive=True, role="video", renderGroup=1, codec=media.codec, width=media.width,
+                 height=media.height, framerate=framerate, bitrate=bitrate)
     fec = {"scheme": "rs-cauchy-gf256", "codec": 2, "symbolSize": symbol_size,
            "blockObjects": n_objects, "blockSeconds": gap_s, "rungs": rung_names,
            "rungFractions": list(rungs), "objectFormat": "props_len:u16|properties|payload",
            # A MoQ group is a GOP of blocksPerGroup blocks; symbol j of the group's q-th block is
            # Object q * objectStride + j (source and repair alike).
            "blocksPerGroup": media.blocks_per_gop, "objectStride": object_stride}
-    tracks = [CatalogTrack(name=source, packaging="loc", isLive=True, role="video", renderGroup=1,
-                           codec=media.codec, width=media.width, height=media.height,
-                           framerate=round(n_objects / gap_s, 3), extra={"x-fec": fec})]
-    cat = Catalog(generatedAt=int(time.time() * 1000), tracks=tracks)
+    tracks = [CatalogTrack(name=source, packaging="loc", altGroup=1 if clean else None,
+                           extra={"x-fec": fec}, **video)]
+    init = None
+    if clean:
+        tracks.insert(0, CatalogTrack(name=clean, packaging="cmaf", initRef=CLEAN_INIT, **video))
+        init = [InitData.from_bytes(CLEAN_INIT, media.cmaf_header())]
+    cat = Catalog(generatedAt=int(time.time() * 1000), tracks=tracks, initDataList=init)
     return cat.to_json().encode()
 
 
