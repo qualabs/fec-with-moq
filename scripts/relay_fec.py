@@ -152,11 +152,11 @@ def stamp_deliveries(alias_name, sends):
     SubgroupDelivery.write = write
 
 
-def gated(cls, gate, sends):
+def gated(cls, gate, sends=None):
     class Gated(cls):
         async def produce(self, out):
             await gate.wait()
-            await super().produce(_Stamped(out, self.trackname, sends))
+            await super().produce(out if sends is None else _Stamped(out, self.trackname, sends))
     Gated.__name__ = f"Gated{cls.__name__}"
     return Gated
 
@@ -224,13 +224,14 @@ async def run_pub(a):
     if getattr(a, "media", None):
         # Shaka phase 2: real LOC frames, blocks of --objects frames,
         # a MoQ group per GOP of --gop-frames (default: one block per GOP)
-        from fecmoq.media import MediaBlockSchedule, catalog_json
+        from fecmoq.media import CLEAN_TRACK, CmafTrack, MediaBlockSchedule, catalog_json
         schedule = MediaBlockSchedule(media=a.media, gop_frames=a.gop_frames or None, seed=a.seed,
                                       n_blocks=total, n_objects=a.objects, gap_s=a.gap,
                                       rung_fracs=a.rungs)
+        clean = CLEAN_TRACK if a.clean_track else None
         catalog = catalog_json(schedule.media, n_objects=a.objects, gap_s=a.gap, rungs=a.rungs,
                                symbol_size=fsym.SYMBOL_SIZE, source=SOURCE_TRACK,
-                               object_stride=fmoq.OBJECT_STRIDE)
+                               object_stride=fmoq.OBJECT_STRIDE, clean=clean)
         if schedule.blocks_per_group > 1 and (
                 a.source_mapping != "datagram" or a.repair_mapping != "datagram"
                 or a.mirror_mapping != "none" or a.repair_ids == "per-rung"
@@ -243,7 +244,7 @@ async def run_pub(a):
     else:
         schedule = fmoq.BlockSchedule(seed=a.seed, n_blocks=total, n_objects=a.objects,
                                       gap_s=a.gap, rung_fracs=a.rungs, gop=a.gop)
-        catalog = None
+        catalog = clean = None
     common = dict(seed=a.seed, n_blocks=total, n_objects=a.objects, gap_s=a.gap,
                   schedule=schedule)
     rung_of = {repair_track_name(r): r for r in range(1, len(a.rungs) + 1)}
@@ -271,6 +272,11 @@ async def run_pub(a):
                 if a.source_mapping == "datagram":
                     t.pace = a.pace_source
                 return t
+            prio = a.prio_src
+        elif name == clean:
+            # the same frames as plain CMSF objects, for a player without FEC; not stamped in sends
+            def make():
+                return gated(CmafTrack, gate)(session, schedule=schedule)
             prio = a.prio_src
         elif name == MIRROR_TRACK and a.mirror_mapping != "none":
             # The other family, offered in the same run: the same blocks as symbols.
@@ -437,8 +443,8 @@ async def run_pub(a):
         if "Error" in kind:
             sys.exit(f"PUBLISH_NAMESPACE refused by the relay: {reply}")
         say(f"PUBLISHED-NAMESPACE {a.ns}: {kind}")
-        say(f"PUBLISHED-ALL namespace announced; serving src + rep1..rep{len(a.rungs)} "
-            f"on demand; waiting for gate {a.gate_file}")
+        say(f"PUBLISHED-ALL namespace announced; serving src + rep1..rep{len(a.rungs)}"
+            f"{f' + {clean} (CMAF)' if clean else ''} on demand; waiting for gate {a.gate_file}")
 
         await wait_for_file(a.gate_file)
         gate.set()
@@ -485,7 +491,8 @@ async def run_pub(a):
         # (aiomoqt sheds rather than queue without bound). Nonzero would mean some
         # "network loss" downstream was really sender-side shedding -- worth knowing
         # before attributing loss to the path.
-        for name in [SOURCE_TRACK] + ([MIRROR_TRACK] if a.mirror_mapping != "none" else []) + list(rung_of):
+        for name in ([clean] if clean else []) + [SOURCE_TRACK] + (
+                [MIRROR_TRACK] if a.mirror_mapping != "none" else []) + list(rung_of):
             t = served.get(name)
             if t is None:
                 say(f"  {name}: never subscribed upstream")
@@ -1336,6 +1343,10 @@ def main():
     q.add_argument("--media", default="", metavar="MP4",
                    help="Shaka phase 2: real LOC video frames from this mp4 as the source objects, one GOP "
                         "(--objects frames, keyframe first) per block, and an MSF catalog track")
+    q.add_argument("--clean-track", action=argparse.BooleanOptionalAction, default=True,
+                   help="with --media: also offer the frames as a plain CMAF track (`video`), listed "
+                        "first in the catalog, for players without FEC; sent only if subscribed "
+                        "(default on; --no-clean-track for the catalog with the source alone)")
     q.add_argument("--linger", type=float, default=10.0, help="stay connected after the last block")
     q.add_argument("--out", default="results")
     q.add_argument("--abrupt-exit", action="store_true",
