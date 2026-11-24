@@ -14,4 +14,5 @@ Run from the repository root, after `scripts/setup.sh`.
 | `relay_edge_probe.py` | Probes relay edge cases: object-id gaps, extensions, end of group, session end |
 | `fec_vectors.py` | Generates test vectors for the browser decoder (`web/fec-decoder/test/vectors.json`) |
 | `fec_media_vectors.py` | Generates real-media test vectors for the browser decoder |
+| `fec_encoder_vectors.py` | Generates golden vectors for the TypeScript encoder (`web/fec-decoder/test/encoder-vectors.json`) |
 | `bench_coders.py` | Encode and decode time per block for each coder, no network |

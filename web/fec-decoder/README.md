@@ -1,10 +1,11 @@
 # fec-decoder
 
-A small TypeScript decoder for our repair objects, for a browser player. It matches the ISA-L
-backend of `src/fecmoq/codec.py` and the wire format of `src/fecmoq/wire.py`. No runtime
-dependencies; the TypeScript toolchain only for type-checking and building.
+A small TypeScript decoder for our repair objects, for a browser player, and the matching encoder,
+for a publisher. Both match the ISA-L backend of `src/fecmoq/codec.py`; the decoder also parses the
+wire format of `src/fecmoq/wire.py`. No runtime dependencies; the TypeScript toolchain only for
+type-checking and building.
 
-**What it is:** the decoder and its unit tests/timings. Nothing here receives MoQ objects. The FEC stage in our Playa fork ([foucast/moq-playa](https://github.com/foucast/moq-playa), branch `fec-with-moq-v2`) uses it; our Shaka Player fork's will too (not yet published).
+**What it is:** the decoder, the encoder, and their unit tests/timings. Nothing here receives MoQ objects. The FEC stage in our Playa fork ([foucast/moq-playa](https://github.com/foucast/moq-playa), branch `fec-with-moq-v2`) uses it; our Shaka Player fork's will too (not yet published).
 
 ## The code it decodes
 
@@ -36,6 +37,20 @@ if (r.ok) use(r.value);            // every object of the block
 
 `sizes` comes from any repair object of the block (`parseRepairObject(p).sizes`).
 
+The encoder (`src/encoder.ts`) is `codec.Coder(k, m, "isal").encode` and `IsalIncrementalEncoder`:
+raw repair symbols, no layout or wire header, so it doesn't depend on how they are sent.
+
+```ts
+import { encode, IncrementalEncoder } from "./src/encoder.ts";
+import { layoutBlock, toSymbols } from "./src/layout.ts";
+
+const lay = layoutBlock(objects.map((o) => o.length));
+const repair = encode(toSymbols(lay, objects), m);   // repair[j] = global repair index j, for any m
+
+const enc = new IncrementalEncoder(k, m, 1100);      // parity as each source symbol is produced
+enc.add(i, symbol);                                  // any order; then enc.repair()
+```
+
 ## Tests
 
 ```sh
@@ -52,6 +67,12 @@ and with all rungs), plus a plain (1126 B) and an INDEXED (1128 B) repair object
 parsing. The generator checks every case's expected outcome against our Python decoder.
 
 Every decodable case must come back byte-identical to the original objects, and every undecodable case must fail cleanly.
+
+`test/encoder.test.ts` re-encodes every block of those vectors and of `media-vectors*.json` and
+compares each repair symbol byte for byte with the one ISA-L made; `test/encoder-vectors.json`, from
+`python scripts/fec_encoder_vectors.py > web/fec-decoder/test/encoder-vectors.json` (needs libisal),
+adds the edges: k = 1, m = 0, k + m = 256, 1-byte and 1099-byte symbols, a padded last symbol. It
+also round-trips TS-encoded blocks through the TS decoder with up to m symbols lost.
 
 ## Timing
 

@@ -34,8 +34,8 @@ Not yet shown: congestion with real cross traffic, bitrate and protection chosen
 | `scripts/relay_fec.py` | Publisher, measurement subscriber and offline analysis through a relay (`pub`, `sub`, `analyze`), for synthetic blocks, real media or MPEG-TS |
 | `scripts/loopback_fec.py` | Source plus repair tracks over loopback, no relay |
 | `scripts/fetch_*.py`, `scripts/relay_edge_probe.py` | Protocol probes: FETCH by range, FETCH decoding, relay edge cases |
-| `scripts/fec_vectors.py`, `scripts/fec_media_vectors.py` | Generate the browser decoder's test vectors |
-| `web/fec-decoder/` | The browser decoder (TypeScript, no runtime dependencies); see its README |
+| `scripts/fec_vectors.py`, `scripts/fec_media_vectors.py`, `scripts/fec_encoder_vectors.py` | Generate the TypeScript decoder's and encoder's test vectors |
+| `web/fec-decoder/` | The browser decoder and its encoder (TypeScript, no runtime dependencies); see its README |
 | `tests/` | Unit tests |
 | `vendor/aiomoqt` | [aiomoqt](https://github.com/gmarzot/aiomoqt) as a git submodule, unmodified |
 
