@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/decoder.test.ts test/media.test.ts test/encoder.test.ts",
+    "test": "node --test test/decoder.test.ts test/media.test.ts test/encoder.test.ts test/wire.test.ts",
     "bench": "tsc && node dist/bench/bench-node.js"
   },
   "devDependencies": {

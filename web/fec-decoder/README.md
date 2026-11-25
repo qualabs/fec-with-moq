@@ -51,6 +51,8 @@ const enc = new IncrementalEncoder(k, m, 1100);      // parity as each source sy
 enc.add(i, symbol);                                  // any order; then enc.repair()
 ```
 
+`packRepairObject(sizes, symbol, codec = CODEC_ISAL, index = null)` (`src/wire.ts`) is `wire.pack_repair`, the inverse of `parseRepairObject`: an `index` gives the INDEXED form; bad sizes, index or codec, or more than 1152 B, throw `RangeError`.
+
 ## Tests
 
 ```sh
@@ -71,8 +73,10 @@ Every decodable case must come back byte-identical to the original objects, and 
 `test/encoder.test.ts` re-encodes every block of those vectors and of `media-vectors*.json` and
 compares each repair symbol byte for byte with the one ISA-L made; `test/encoder-vectors.json`, from
 `python scripts/fec_encoder_vectors.py > web/fec-decoder/test/encoder-vectors.json` (needs libisal),
-adds the edges: k = 1, m = 0, k + m = 256, 1-byte and 1099-byte symbols, a padded last symbol. It
-also round-trips TS-encoded blocks through the TS decoder with up to m symbols lost.
+adds the edges: k = 1, m = 0, k + m = 256, 1-byte and 1099-byte symbols, a padded last symbol, 255
+objects, a 65535 B object. It also round-trips TS-encoded blocks through the TS decoder with up to m
+symbols lost. `test/wire.test.ts` compares `packRepairObject` with `pack_repair`'s objects in the same
+file, plain and INDEXED, byte for byte, and takes a block from objects to repair objects and back.
 
 ## Timing
 
