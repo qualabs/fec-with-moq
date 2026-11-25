@@ -55,6 +55,8 @@ enc.add(i, symbol);                                  // any order; then enc.repa
 
 `src/schedule.ts` is the three-track catalog's block schedule (`moq.py`'s `rung_slices`, `address`, `repair_address`; `media.py`'s GOP cut as `cutBlocks`): `sourceObjects(b, objects, bpg)` and `repairObjects(b, slice, sizes, repair, bpg)` give each datagram's group, object, group start and payload; checked against `test/schedule-vectors.json` (`scripts/fec_schedule_vectors.py`, needs libisal) and Playa's `locate()`.
 
+`src/catalog.ts` is `media.py`'s `catalog_json`, the MSF draft-02 three-track catalog (plain LOC track, `x-fec-source`, `x-fec-repair` rungs): `catalog(media, opts)` gives the object and `catalogJson(media, opts)` the bytes the publisher sends (`json.dumps`' separators, `ensure_ascii`, Python float repr, `round` and `:g`); checked byte for byte against `test/catalog-vectors.json` (`scripts/fec_catalog_vectors.py`, no ISA-L) and with Playa's `fecInfoFromCatalog`.
+
 ## Tests
 
 ```sh
