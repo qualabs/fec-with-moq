@@ -53,6 +53,8 @@ enc.add(i, symbol);                                  // any order; then enc.repa
 
 `packRepairObject(sizes, symbol, codec = CODEC_ISAL, index = null)` (`src/wire.ts`) is `wire.pack_repair`, the inverse of `parseRepairObject`: an `index` gives the INDEXED form; bad sizes, index or codec, or more than 1152 B, throw `RangeError`.
 
+`src/schedule.ts` is the three-track catalog's block schedule (`moq.py`'s `rung_slices`, `address`, `repair_address`; `media.py`'s GOP cut as `cutBlocks`): `sourceObjects(b, objects, bpg)` and `repairObjects(b, slice, sizes, repair, bpg)` give each datagram's group, object, group start and payload; checked against `test/schedule-vectors.json` (`scripts/fec_schedule_vectors.py`, needs libisal) and Playa's `locate()`.
+
 ## Tests
 
 ```sh
