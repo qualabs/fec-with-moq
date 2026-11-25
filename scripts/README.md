@@ -16,4 +16,5 @@ Run from the repository root, after `scripts/setup.sh`.
 | `fec_media_vectors.py` | Generates real-media test vectors for the browser decoder |
 | `fec_encoder_vectors.py` | Generates golden vectors for the TypeScript encoder (`web/fec-decoder/test/encoder-vectors.json`) |
 | `fec_schedule_vectors.py` | Generates golden vectors for the TypeScript block schedule (`web/fec-decoder/test/schedule-vectors.json`) |
+| `fec_catalog_vectors.py` | Generates golden vectors for the TypeScript three-track catalog (`web/fec-decoder/test/catalog-vectors.json`) |
 | `bench_coders.py` | Encode and decode time per block for each coder, no network |
