@@ -1,14 +1,17 @@
 // The FEC publisher's MoQ side: announces the namespace, answers SUBSCRIBE for `catalog`, `src` and
 // the repair rungs, sends the catalog as a new group every interval on its own subgroup stream, and
-// each block's datagrams at the block rate, the source before the repair is encoded. FETCH is
+// each block's datagrams at the block rate, the source before the repair is encoded. Each
+// subscription gets what its filter asks for, from the Largest Object its SUBSCRIBE_OK reports. FETCH is
 // refused (NOT_SUPPORTED); the plain `video` track is in the catalog but not served (DOES_NOT_EXIST),
 // so a stock player can't play it yet.
 
-import { MAX_VI64, PublishDoneCode18, RequestError18, SubgroupIdMode, vi64EncodingLength } from "@openmoq/transport";
+import { MAX_VI64, PublishDoneCode18, RequestError18, SubgroupIdMode, vi64EncodingLength,
+  type SubscriptionWindow } from "@openmoq/transport";
 import type { MoqtConnection } from "@openmoq/webtransport";
 import { layoutBlock } from "fec-decoder/src/layout.ts";
 import { repairTrackName } from "fec-decoder/src/schedule.ts";
 import { connect } from "./connect.ts";
+import { admits, describeFilter, filterWindow, Largest, requestedFilter, subscribeOkParams } from "./filter.ts";
 import type { MediaBlocks } from "./media.ts";
 import { blockDatagrams, maxPayload, SOURCE_TRACK, type Datagram } from "./producer.ts";
 
@@ -46,7 +49,7 @@ export interface PublisherOptions {
   onFatal?: (why: string) => void;
 }
 
-interface Sub { requestId: bigint; alias: bigint; ready: boolean }
+interface Sub { requestId: bigint; alias: bigint; ready: boolean; window: SubscriptionWindow }
 
 export interface TrackCounters { sent: number; dropped: number; failed: number }
 
@@ -57,6 +60,7 @@ export class FecPublisher {
   private conn!: MoqtConnection;
   private closeConn: () => Promise<void> = async () => {};
   private readonly subs = new Map<string, Sub[]>();
+  private readonly largest = new Map<string, Largest>();
   private readonly failLog = new Map<string, FailLog>();
   private nextAlias = 1n;
   private catalogGroup = 0n;
@@ -71,21 +75,15 @@ export class FecPublisher {
     this.o = o;
     this.log = o.log ?? ((l) => console.log(l));
     this.tracks = [CATALOG_TRACK, SOURCE_TRACK, ...o.rungs.map((_, r) => repairTrackName(r + 1))];
-    for (const t of this.tracks) { this.subs.set(t, []); this.counters.set(t, { sent: 0, dropped: 0, failed: 0 }); }
+    for (const t of this.tracks) {
+      this.subs.set(t, []);
+      this.largest.set(t, new Largest());
+      this.counters.set(t, { sent: 0, dropped: 0, failed: 0 });
+    }
   }
 
   async start(): Promise<void> {
-    const c = await connect(this.o.url, this.o.certHash, (conn) => {
-      conn.onSubscribe = (id, _ns, name) => void this.onSubscribe(id, new TextDecoder().decode(name));
-      conn.onSubscribeClosed = (id) => this.onSubscribeClosed(id);
-      conn.onFetch = (id) => {
-        this.log(`FETCH ${id} refused`);
-        void conn.rejectFetch(id, RequestError18.NOT_SUPPORTED, "FETCH not served").catch((e) => this.log(`rejectFetch: ${e}`));
-      };
-      conn.onError = (e) => { if (!this.stopped) this.log(`connection error: ${e.message}`); };
-      conn.onClose = (code, reason) => { if (!this.stopped) this.fatal(`SESSION-DEAD connection closed: ${code} ${reason ?? ""}`); };
-    });
-    this.conn = c.conn;
+    const c = await connect(this.o.url, this.o.certHash, (conn) => this.attach(conn));
     this.closeConn = c.close;
     const worst = maxPayload(this.o.media.n) + MAX_DATAGRAM_HEADER;
     this.log(`CONNECTED ${this.o.url} draft 18; maxDatagramSize ${c.maxDatagramSize || "unknown"}, `
@@ -95,6 +93,24 @@ export class FecPublisher {
       throw new RangeError(`a ${this.o.media.n}-object block's datagram can reach ${worst} B, over the session's `
         + `maxDatagramSize ${c.maxDatagramSize} B; use fewer --objects`);
     }
+    await this.serve();
+  }
+
+  /** Take the connection's callbacks (before SETUP). start() does it; a test can hand in its own connection. */
+  attach(conn: MoqtConnection): void {
+    this.conn = conn;
+    conn.onSubscribe = (id, _ns, name, params) => void this.onSubscribe(id, new TextDecoder().decode(name), params);
+    conn.onSubscribeClosed = (id) => this.onSubscribeClosed(id);
+    conn.onFetch = (id) => {
+      this.log(`FETCH ${id} refused`);
+      void conn.rejectFetch(id, RequestError18.NOT_SUPPORTED, "FETCH not served").catch((e) => this.log(`rejectFetch: ${e}`));
+    };
+    conn.onError = (e) => { if (!this.stopped) this.log(`connection error: ${e.message}`); };
+    conn.onClose = (code, reason) => { if (!this.stopped) this.fatal(`SESSION-DEAD connection closed: ${code} ${reason ?? ""}`); };
+  }
+
+  /** Announce the namespace and start the catalog timer and the block loop. */
+  async serve(): Promise<void> {
     await this.conn.publishNamespace([new TextEncoder().encode(this.o.namespace)]);
     this.log(`ANNOUNCED ${this.o.namespace}`);
     this.timers.push(setInterval(() => void this.sendCatalog(), (this.o.catalogIntervalS ?? 2) * 1000));
@@ -118,7 +134,7 @@ export class FecPublisher {
     if (this.o.onFatal) this.o.onFatal(why);
   }
 
-  private async onSubscribe(requestId: bigint, name: string): Promise<void> {
+  private async onSubscribe(requestId: bigint, name: string, params?: Map<bigint, unknown[]>): Promise<void> {
     const list = this.subs.get(name);
     if (!list) {
       await this.conn.rejectSubscribe(requestId, RequestError18.DOES_NOT_EXIST, `no track ${name}`)
@@ -126,12 +142,23 @@ export class FecPublisher {
       this.log(`SUBSCRIBE ${name} (${requestId}) refused`);
       return;
     }
-    // Registered before SUBSCRIBE_OK goes out, so an UNSUBSCRIBE in the meantime finds it;
-    // datagrams go to it only once it is ready.
-    const s: Sub = { requestId, alias: this.nextAlias++, ready: false };
+    let filter;
+    try {
+      filter = requestedFilter(params);
+    } catch (e) {
+      await this.conn.rejectSubscribe(requestId, RequestError18.INVALID_RANGE, `bad filter: ${(e as Error).message}`)
+        .catch(() => {});
+      this.log(`SUBSCRIBE ${name} (${requestId}) refused: ${(e as Error).message}`);
+      return;
+    }
+    // The window is fixed by the Largest Object reported now. Registered before SUBSCRIBE_OK goes
+    // out, so an UNSUBSCRIBE in the meantime finds it; objects go to it only once it is ready, so
+    // any sent while SUBSCRIBE_OK is being written are not sent to it.
+    const largest = this.largest.get(name)!.value;
+    const s: Sub = { requestId, alias: this.nextAlias++, ready: false, window: filterWindow(filter, largest) };
     list.push(s);
     try {
-      await this.conn.acceptSubscribe(requestId, s.alias);
+      await this.conn.acceptSubscribe(requestId, s.alias, { parameters: subscribeOkParams(largest) });
     } catch (e) {
       this.forget(list, s);
       this.log(`SUBSCRIBE ${name} (${requestId}) failed: ${(e as Error).message}`);
@@ -139,8 +166,9 @@ export class FecPublisher {
     }
     if (!list.includes(s)) { this.log(`SUBSCRIBE ${name} (${requestId}) closed before SUBSCRIBE_OK went out`); return; }
     s.ready = true;
-    this.log(`SUBSCRIBED ${name} request ${requestId} alias ${s.alias}`);
-    if (name === CATALOG_TRACK) await this.sendCatalogTo(s, this.catalogGroup++);
+    this.log(`SUBSCRIBED ${name} request ${requestId} alias ${s.alias} filter ${describeFilter(filter)} `
+      + `largest ${largest ? `${largest.group}.${largest.object}` : "none"} from ${s.window.start.group}.${s.window.start.object}`);
+    if (name === CATALOG_TRACK) await this.sendCatalogTo(s, this.nextCatalogGroup());
   }
 
   private forget(list: Sub[], s: Sub): void {
@@ -167,13 +195,20 @@ export class FecPublisher {
   private async sendCatalog(): Promise<void> {
     const subs = this.subs.get(CATALOG_TRACK)!.filter((s) => s.ready);
     if (subs.length === 0) return;
-    const group = this.catalogGroup++;
+    const group = this.nextCatalogGroup();
     await Promise.all(subs.map((s) => this.sendCatalogTo(s, group)));
+  }
+
+  private nextCatalogGroup(): bigint {
+    const g = this.catalogGroup++;
+    this.largest.get(CATALOG_TRACK)!.note(g, 0);
+    return g;
   }
 
   /** One catalog object as the whole group: object 0 on subgroup 0, END_OF_GROUP, then FIN. */
   private async sendCatalogTo(s: Sub, group: bigint): Promise<void> {
     const n = this.counters.get(CATALOG_TRACK)!;
+    if (!admits(s.window, group, 0)) return;
     try {
       const stream = await this.conn.openSubgroup(s.alias, group, 0n, {
         requestId: s.requestId, endOfGroup: true, defaultPriority: true,
@@ -189,9 +224,11 @@ export class FecPublisher {
 
   private async send(d: Datagram): Promise<void> {
     const n = this.counters.get(d.track)!;
+    // A dropped datagram stands for loss on the wire: the track has still sent it.
+    this.largest.get(d.track)!.note(d.group, d.object);
     if (this.o.drop?.(d)) { n.dropped++; return; }
     for (const s of this.subs.get(d.track)!) {
-      if (!s.ready) continue;
+      if (!s.ready || !admits(s.window, d.group, d.object)) continue;
       try {
         await this.conn.sendDatagram(s.alias, BigInt(d.group), BigInt(d.object), d.payload, { requestId: s.requestId });
         n.sent++;

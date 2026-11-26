@@ -30,6 +30,15 @@ How it sends:
   payload over the 1152 B datagram ceiling, k + m over 256), and so is the largest datagram against
   the session's `maxDatagramSize`; the publisher refuses to start (exit 2, or 1 after connecting) with
   a message instead of failing mid-run.
+- **Subscription filters.** A SUBSCRIBE's filter (draft 18 §5.1.2: none, NextGroupStart,
+  LargestObject, AbsoluteStart, AbsoluteRange) is applied as aiomoqt does: when the subscription is
+  accepted, the track's Largest Object (the largest group and object it has sent, a datagram dropped
+  by `--drop-src` included) fixes the window, SUBSCRIBE_OK carries it as LARGEST_OBJECT, and the
+  subscriber gets only the objects inside the window. A NextGroupStart subscription to a rung therefore
+  starts at the next group, which with `--gop-frames` is the next GOP, not the next block. A catalog
+  SUBSCRIBE gets a new catalog group, after the Largest Object. Objects sent while SUBSCRIBE_OK is
+  being written are not sent to the new subscription. An AbsoluteRange's end stops the objects, but no
+  PUBLISH_DONE follows it, and a REQUEST_UPDATE doesn't change the window.
 - **Session lifecycle.** A subscription is registered before its SUBSCRIBE_OK is written, and gets
   datagrams once it is accepted. Send failures are logged at the first one and then at most every 5 s
   per track. If the session closes before `stop()`, the publisher logs `SESSION-DEAD` and exits with
@@ -52,8 +61,6 @@ How it sends:
 - still open from the expert review of 2026-11-26 (findings by number):
   - 6: `--drop-src` is i.i.d. loss on the source before the wire. It is a functional test, not a
     measure of what FEC gains; a number needs netem or a burst model, stated with the result;
-  - 10: the SUBSCRIBE filter is ignored and SUBSCRIBE_OK carries no Largest Object, so a
-    NextGroupStart subscription gets datagrams from the next block, not the next group;
   - 12: the bytes match Python's from the LOC objects onward only. The two publishers never read the
     same clip;
   - 13: no ADR yet scopes this TS publisher against the umbrella ADR 0001;
@@ -68,6 +75,7 @@ How it sends:
 | `src/media.ts` | blocks of frames (`cutBlocks`), LOC objects and their timestamps |
 | `src/producer.ts` | one block's `src` and `rep<r>` datagrams, source before encoding; the startup limit checks; simulated loss on `src` |
 | `src/publisher.ts` | announce, answer SUBSCRIBE/FETCH, send the catalog and the blocks |
+| `src/filter.ts` | a SUBSCRIBE's filter, its window from the Largest Object, SUBSCRIBE_OK's LARGEST_OBJECT |
 | `src/collector.ts` | the other end, for checks: datagrams back into blocks, decoded with `web/fec-decoder` |
 | `src/cli.ts` | the publisher's command line |
 | `scripts/subscribe-check.ts` | a Node subscriber through the relay: counts objects per track, compares each block's datagrams with what was sent, rebuilds each block and compares its frames with the clip |

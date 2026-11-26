@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc",
-    "test": "node --test test/producer.test.ts test/media.test.ts",
+    "test": "node --test test/producer.test.ts test/media.test.ts test/publisher.test.ts",
     "publish-fec": "node src/cli.ts",
     "subscribe-check": "node scripts/subscribe-check.ts"
   },
