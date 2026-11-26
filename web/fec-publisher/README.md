@@ -19,13 +19,17 @@ How it sends:
 
 - **Source before repair, and before encoding.** A block's `src` datagrams are all sent before its
   repair is encoded (`blockDatagrams` is a generator), then each rung's repair follows.
-- **Pacing.** `--pace-source F` spreads a block's source over F of the block period and
-  `--pace-repair F` each rung's repair over F of it after the source, as `relay_fec.py`'s options of
-  the same name. The default is 0 (back to back), as in Python. Back to back loses datagrams at a
-  realistic bitrate: FAILS drops a datagram it can't queue without an error. On a 1080p60 AV1 clip at
-  4.5 Mbps, at 0 % loss through a local moqx, about 40 % of the datagrams didn't arrive without
-  pacing. With `--pace-source 0.5 --pace-repair 0.4` all of them arrived in two runs out of four; the
-  other two each lost a burst in one episode on a loaded machine (23 and 691 datagrams, up to 7 %). Pacing is not a guarantee.
+- **Pacing, on by default.** `--pace-source F` spreads a block's source over F of the block period
+  and `--pace-repair F` each rung's repair over F of it after the source, as `relay_fec.py`'s options
+  of the same name. The defaults are 0.5 and 0.4; `relay_fec.py`'s are 0 (back to back), which stays
+  selectable with `--pace-source 0 --pace-repair 0`. The defaults differ because back to back loses
+  datagrams at a realistic bitrate: the datagrams queue in the publisher's QUIC stack and expire there
+  or are dropped unsent, with no error to the publisher. On a 1080p60 AV1 clip at 4.5 Mbps, at 0 % loss
+  through a local moqx, about 40 % of the datagrams didn't arrive without pacing. With 0.5 / 0.4 all of
+  them arrived in two runs out of four; the other two each lost a burst in one episode on a loaded
+  machine (23 and 691 datagrams, up to 7 %). Pacing is not a guarantee. The STATS and DONE log lines
+  carry the session's QUIC counters (`quic datagrams expired N lost N`), which show such losses on the
+  publisher's side.
 - **Checks before sending.** Every block of the clip is checked at startup (an object over 65535 B, a
   payload over the 1152 B datagram ceiling, k + m over 256), and so is the largest datagram against
   the session's `maxDatagramSize`; the publisher refuses to start (exit 2, or 1 after connecting) with
@@ -77,7 +81,7 @@ How it sends:
 | `src/publisher.ts` | announce, answer SUBSCRIBE/FETCH, send the catalog and the blocks |
 | `src/filter.ts` | a SUBSCRIBE's filter, its window from the Largest Object, SUBSCRIBE_OK's LARGEST_OBJECT |
 | `src/collector.ts` | the other end, for checks: datagrams back into blocks, decoded with `web/fec-decoder` |
-| `src/cli.ts` | the publisher's command line |
+| `src/cli.ts`, `src/options.ts` | the publisher's command line and its options and defaults |
 | `scripts/subscribe-check.ts` | a Node subscriber through the relay: counts objects per track, compares each block's datagrams with what was sent, rebuilds each block and compares its frames with the clip |
 | `scripts/player-check.mjs` | the Playa FEC test page (moq-playa `fec-with-moq-v2`), headless in the system Chrome |
 
@@ -108,7 +112,7 @@ ffmpeg -f lavfi -i testsrc2=size=640x360:rate=60 -t 10 -c:v libsvtav1 -preset 10
 # 4. the publisher (in web/fec-publisher); --drop-src 0.05 drops 5% of the src datagrams before sending
 node src/cli.ts --url https://127.0.0.1:4473/moq-relay --hash $HASH --ns fec-$RANDOM --media $RUN/clip.mp4 \
   [--rungs 0.15,0.15,0.15 | --rungs ''] [--drop-src 0.05] [--gop-frames 120] \
-  [--pace-source 0.5 --pace-repair 0.4] [--secs 60]
+  [--pace-source 0 --pace-repair 0] [--secs 60]
 ```
 
 A realistic clip, Marc's defaults (1080p60, a 2 s GOP, so `--gop-frames 120`: ten 12-frame blocks per

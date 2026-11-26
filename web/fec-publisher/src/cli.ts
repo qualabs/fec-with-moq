@@ -1,5 +1,6 @@
 // node src/cli.ts --url https://127.0.0.1:4473/moq-relay --hash HEX --ns NS --media clip.mp4 [--rungs 0.15,0.15,0.15]
 // [--drop-src 0.05] [--seed 7] [--pace-source 0.5] [--pace-repair 0.4] [--secs 60]
+// Pacing is on by default (0.5 / 0.4); --pace-source 0 --pace-repair 0 sends back to back, as relay_fec.py's default.
 
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -10,21 +11,12 @@ import { MediaBlocks } from "./media.ts";
 import { readVideoTrack } from "./mp4.ts";
 import { blockLimitErrors, sourceDropper, SOURCE_TRACK } from "./producer.ts";
 import { FecPublisher } from "./publisher.ts";
+import { PUBLISHER_OPTIONS } from "./options.ts";
 
-const { values: a } = parseArgs({
-  options: {
-    url: { type: "string" }, hash: { type: "string" }, ns: { type: "string" }, media: { type: "string" },
-    objects: { type: "string", default: "12" }, gap: { type: "string", default: "0.2" },
-    "gop-frames": { type: "string" }, rungs: { type: "string", default: "0.15,0.15,0.15" },
-    "drop-src": { type: "string", default: "0" }, seed: { type: "string", default: "7" },
-    secs: { type: "string" }, "catalog-interval": { type: "string", default: "2" },
-    "plain-track": { type: "string", default: "video" },
-    "pace-source": { type: "string", default: "0" }, "pace-repair": { type: "string", default: "0" },
-  },
-});
+const { values: a } = parseArgs({ options: PUBLISHER_OPTIONS });
 if (!a.url || !a.ns || !a.media) {
   console.error("usage: node src/cli.ts --url URL [--hash SHA256HEX] --ns NS --media CLIP.mp4 [--rungs F,F,F | --rungs ''] "
-    + "[--objects 12] [--gap 0.2] [--gop-frames N] [--drop-src P] [--seed N] [--pace-source F] [--pace-repair F] [--secs S]");
+    + "[--objects 12] [--gap 0.2] [--gop-frames N] [--drop-src P] [--seed N] [--pace-source 0.5] [--pace-repair 0.4] [--secs S]");
   process.exit(2);
 }
 
