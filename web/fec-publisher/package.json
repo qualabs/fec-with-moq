@@ -1,0 +1,24 @@
+{
+  "name": "fec-publisher",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Spike: the fec-with-moq three-track FEC publisher (catalog, src and repair datagrams) in TypeScript over Playa's MoQT, draft 18 WebTransport from Node",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc",
+    "test": "node --test test/producer.test.ts test/media.test.ts",
+    "publish-fec": "node src/cli.ts",
+    "subscribe-check": "node scripts/subscribe-check.ts"
+  },
+  "dependencies": {
+    "@openmoq/transport": "0.7.0",
+    "@openmoq/webtransport": "0.7.0",
+    "@fails-components/webtransport": "1.6.8",
+    "@fails-components/webtransport-transport-http3-quiche": "1.6.8",
+    "fec-decoder": "file:../fec-decoder"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "@types/node": "^24.0.0"
+  }
+}
