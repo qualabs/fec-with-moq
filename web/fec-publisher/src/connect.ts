@@ -5,7 +5,12 @@
 import { WebTransport, quicheLoaded } from "@fails-components/webtransport";
 import { MoqtConnection, type WebTransportLike } from "@openmoq/webtransport";
 
-export interface Connected { conn: MoqtConnection; close(): Promise<void> }
+export interface Connected {
+  conn: MoqtConnection;
+  /** The session's datagram ceiling once ready (wt.datagrams.maxDatagramSize; 0 if FAILS doesn't know). */
+  maxDatagramSize: number;
+  close(): Promise<void>;
+}
 
 export function hexBytes(hex: string): Uint8Array<ArrayBuffer> {
   if (!/^([0-9a-f]{2})+$/i.test(hex)) throw new RangeError(`not a hex string: ${hex}`);
@@ -21,12 +26,14 @@ export async function connect(url: string, certHash: string | undefined,
     protocols: ["moqt-18"],
   });
   await wt.ready;
+  const maxDatagramSize = wt.datagrams.maxDatagramSize ?? 0;
   const conn = new MoqtConnection(18);
   prepare(conn);
   // The FAILS session is W3C-shaped; only TypeScript's stream generics differ.
   await conn.connect(wt as unknown as WebTransportLike);
   return {
     conn,
+    maxDatagramSize,
     async close() {
       await conn.close().catch(() => {});   // closes the WebTransport session too
       await Promise.race([wt.closed.catch(() => {}), new Promise((r) => setTimeout(r, 2000))]);

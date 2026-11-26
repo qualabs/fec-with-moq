@@ -1,16 +1,29 @@
 // The FEC publisher's MoQ side: announces the namespace, answers SUBSCRIBE for `catalog`, `src` and
 // the repair rungs, sends the catalog as a new group every interval on its own subgroup stream, and
-// each block's datagrams at the block rate. FETCH is refused (NOT_SUPPORTED); the plain `video`
-// track is in the catalog but not served (DOES_NOT_EXIST), so a stock player can't play it yet.
+// each block's datagrams at the block rate, the source before the repair is encoded. FETCH is
+// refused (NOT_SUPPORTED); the plain `video` track is in the catalog but not served (DOES_NOT_EXIST),
+// so a stock player can't play it yet.
 
-import { RequestError18, SubgroupIdMode } from "@openmoq/transport";
+import { MAX_VI64, PublishDoneCode18, RequestError18, SubgroupIdMode, vi64EncodingLength } from "@openmoq/transport";
 import type { MoqtConnection } from "@openmoq/webtransport";
+import { layoutBlock } from "fec-decoder/src/layout.ts";
 import { repairTrackName } from "fec-decoder/src/schedule.ts";
 import { connect } from "./connect.ts";
 import type { MediaBlocks } from "./media.ts";
-import { blockDatagrams, SOURCE_TRACK, type Datagram } from "./producer.ts";
+import { blockDatagrams, maxPayload, SOURCE_TRACK, type Datagram } from "./producer.ts";
 
 export const CATALOG_TRACK = "catalog";
+
+function until(t: number): Promise<void> | void {
+  const ms = t - performance.now();
+  if (ms > 0) return new Promise((r) => setTimeout(r, ms));
+}
+
+/** A draft-18 OBJECT_DATAGRAM header at its largest: type, alias, group, object (vi64 each), priority. */
+export const MAX_DATAGRAM_HEADER = 1 + 3 * vi64EncodingLength(MAX_VI64) + 1;
+
+/** Send failures are logged at the first one, then at most once per this many ms per track. */
+const FAIL_LOG_MS = 5000;
 
 export interface PublisherOptions {
   url: string;
@@ -22,20 +35,29 @@ export interface PublisherOptions {
   catalogIntervalS?: number;
   /** Return true to drop a datagram before it is sent (simulated loss on the publisher). */
   drop?: (d: Datagram) => boolean;
+  /** Spread a block's source datagrams evenly over this fraction of the block period (0: back to back). */
+  paceSource?: number;
+  /** Spread each rung's repair for a block evenly over this fraction of the block period, after the source. */
+  paceRepair?: number;
   /** Stop after this many blocks (default: run until stop()). */
   blocks?: number;
   log?: (line: string) => void;
+  /** The session ended without stop(), or the block loop threw: the publisher can't go on. */
+  onFatal?: (why: string) => void;
 }
 
-interface Sub { requestId: bigint; alias: bigint }
+interface Sub { requestId: bigint; alias: bigint; ready: boolean }
 
 export interface TrackCounters { sent: number; dropped: number; failed: number }
+
+interface FailLog { at: number; since: number }
 
 export class FecPublisher {
   readonly counters = new Map<string, TrackCounters>();
   private conn!: MoqtConnection;
   private closeConn: () => Promise<void> = async () => {};
   private readonly subs = new Map<string, Sub[]>();
+  private readonly failLog = new Map<string, FailLog>();
   private nextAlias = 1n;
   private catalogGroup = 0n;
   private timers: NodeJS.Timeout[] = [];
@@ -61,51 +83,89 @@ export class FecPublisher {
         void conn.rejectFetch(id, RequestError18.NOT_SUPPORTED, "FETCH not served").catch((e) => this.log(`rejectFetch: ${e}`));
       };
       conn.onError = (e) => { if (!this.stopped) this.log(`connection error: ${e.message}`); };
-      conn.onClose = (code, reason) => { if (!this.stopped) this.log(`connection closed: ${code} ${reason ?? ""}`); };
+      conn.onClose = (code, reason) => { if (!this.stopped) this.fatal(`SESSION-DEAD connection closed: ${code} ${reason ?? ""}`); };
     });
     this.conn = c.conn;
     this.closeConn = c.close;
-    this.log(`CONNECTED ${this.o.url} draft 18`);
+    const worst = maxPayload(this.o.media.n) + MAX_DATAGRAM_HEADER;
+    this.log(`CONNECTED ${this.o.url} draft 18; maxDatagramSize ${c.maxDatagramSize || "unknown"}, `
+      + `largest datagram ${worst} B`);
+    if (c.maxDatagramSize && worst > c.maxDatagramSize) {
+      await c.close();
+      throw new RangeError(`a ${this.o.media.n}-object block's datagram can reach ${worst} B, over the session's `
+        + `maxDatagramSize ${c.maxDatagramSize} B; use fewer --objects`);
+    }
     await this.conn.publishNamespace([new TextEncoder().encode(this.o.namespace)]);
     this.log(`ANNOUNCED ${this.o.namespace}`);
     this.timers.push(setInterval(() => void this.sendCatalog(), (this.o.catalogIntervalS ?? 2) * 1000));
     this.done = this.runBlocks();
+    this.done.catch((e: unknown) => this.fatal(`block loop: ${(e as Error).stack ?? e}`));
   }
 
   async stop(): Promise<void> {
+    if (this.stopped) return;
     this.stopped = true;
     for (const t of this.timers) clearInterval(t);
     await this.done.catch(() => {});
+    const ends = [...this.subs.values()].flat().filter((s) => s.ready)
+      .map((s) => this.conn.publishDone(s.requestId, PublishDoneCode18.TRACK_ENDED, "publisher stopped").catch(() => {}));
+    await Promise.race([Promise.all(ends), new Promise((r) => setTimeout(r, 1000))]);
     await this.closeConn();
+  }
+
+  private fatal(why: string): void {
+    this.log(why);
+    if (this.o.onFatal) this.o.onFatal(why);
   }
 
   private async onSubscribe(requestId: bigint, name: string): Promise<void> {
     const list = this.subs.get(name);
-    try {
-      if (!list) {
-        await this.conn.rejectSubscribe(requestId, RequestError18.DOES_NOT_EXIST, `no track ${name}`);
-        this.log(`SUBSCRIBE ${name} (${requestId}) refused`);
-        return;
-      }
-      const alias = this.nextAlias++;
-      await this.conn.acceptSubscribe(requestId, alias);
-      list.push({ requestId, alias });
-      this.log(`SUBSCRIBED ${name} request ${requestId} alias ${alias}`);
-      if (name === CATALOG_TRACK) await this.sendCatalogTo({ requestId, alias }, this.catalogGroup++);
-    } catch (e) {
-      this.log(`SUBSCRIBE ${name} (${requestId}) failed: ${(e as Error).message}`);
+    if (!list) {
+      await this.conn.rejectSubscribe(requestId, RequestError18.DOES_NOT_EXIST, `no track ${name}`)
+        .catch((e) => this.log(`rejectSubscribe ${name}: ${(e as Error).message}`));
+      this.log(`SUBSCRIBE ${name} (${requestId}) refused`);
+      return;
     }
+    // Registered before SUBSCRIBE_OK goes out, so an UNSUBSCRIBE in the meantime finds it;
+    // datagrams go to it only once it is ready.
+    const s: Sub = { requestId, alias: this.nextAlias++, ready: false };
+    list.push(s);
+    try {
+      await this.conn.acceptSubscribe(requestId, s.alias);
+    } catch (e) {
+      this.forget(list, s);
+      this.log(`SUBSCRIBE ${name} (${requestId}) failed: ${(e as Error).message}`);
+      return;
+    }
+    if (!list.includes(s)) { this.log(`SUBSCRIBE ${name} (${requestId}) closed before SUBSCRIBE_OK went out`); return; }
+    s.ready = true;
+    this.log(`SUBSCRIBED ${name} request ${requestId} alias ${s.alias}`);
+    if (name === CATALOG_TRACK) await this.sendCatalogTo(s, this.catalogGroup++);
+  }
+
+  private forget(list: Sub[], s: Sub): void {
+    const i = list.indexOf(s);
+    if (i >= 0) list.splice(i, 1);
   }
 
   private onSubscribeClosed(requestId: bigint): void {
     for (const [name, list] of this.subs) {
-      const i = list.findIndex((s) => s.requestId === requestId);
-      if (i >= 0) { list.splice(i, 1); this.log(`UNSUBSCRIBED ${name} request ${requestId}`); }
+      const s = list.find((x) => x.requestId === requestId);
+      if (s) { this.forget(list, s); this.log(`UNSUBSCRIBED ${name} request ${requestId}`); }
     }
   }
 
+  private failed(track: string, n: TrackCounters, what: string): void {
+    n.failed++;
+    const now = performance.now();
+    const f = this.failLog.get(track);
+    if (f && now - f.at < FAIL_LOG_MS) { f.since++; return; }
+    this.log(`${track}: ${what}${f ? ` (${f.since} more failures since the last report)` : ""}; ${n.failed} in all`);
+    this.failLog.set(track, { at: now, since: 0 });
+  }
+
   private async sendCatalog(): Promise<void> {
-    const subs = this.subs.get(CATALOG_TRACK)!;
+    const subs = this.subs.get(CATALOG_TRACK)!.filter((s) => s.ready);
     if (subs.length === 0) return;
     const group = this.catalogGroup++;
     await Promise.all(subs.map((s) => this.sendCatalogTo(s, group)));
@@ -123,13 +183,26 @@ export class FecPublisher {
       await this.conn.closeSubgroup(stream);
       n.sent++;
     } catch (e) {
-      n.failed++;
-      this.log(`catalog group ${group}: ${(e as Error).message}`);
+      this.failed(CATALOG_TRACK, n, `group ${group}: ${(e as Error).message}`);
+    }
+  }
+
+  private async send(d: Datagram): Promise<void> {
+    const n = this.counters.get(d.track)!;
+    if (this.o.drop?.(d)) { n.dropped++; return; }
+    for (const s of this.subs.get(d.track)!) {
+      if (!s.ready) continue;
+      try {
+        await this.conn.sendDatagram(s.alias, BigInt(d.group), BigInt(d.object), d.payload, { requestId: s.requestId });
+        n.sent++;
+      } catch (e) {
+        this.failed(d.track, n, `datagram ${d.group}.${d.object}: ${(e as Error).message}`);
+      }
     }
   }
 
   private async runBlocks(): Promise<void> {
-    const { media, rungs, drop } = this.o;
+    const { media, rungs } = this.o;
     const gapMs = media.gapS * 1000;
     const tStart = performance.now();
     const t0Us = Math.trunc(Date.now() * 1000);
@@ -137,19 +210,42 @@ export class FecPublisher {
       const wait = tStart + b * gapMs - performance.now();
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
       if (this.stopped) break;
-      for (const d of blockDatagrams(b, media.objects(b, t0Us), rungs, media.blocksPerGroup)) {
-        const subs = this.subs.get(d.track)!;
-        const n = this.counters.get(d.track)!;
-        if (drop?.(d)) { n.dropped++; continue; }
-        for (const s of subs) {
-          try {
-            await this.conn.sendDatagram(s.alias, BigInt(d.group), BigInt(d.object), d.payload, { requestId: s.requestId });
-            n.sent++;
-          } catch (e) {
-            if (n.failed++ === 0) this.log(`${d.track} datagram: ${(e as Error).message}`);
-          }
-        }
+      await this.sendBlock(b, media.objects(b, t0Us), rungs, gapMs);
+    }
+  }
+
+  /**
+   * Block b's source, then its repair (relay_fec.py's --pace-source and --pace-repair, the source one
+   * interval per block): each paced datagram waits for its slot. Paced rungs interleave by slot, as
+   * Python's one task per rung does; unpaced, they go back to back in rung order.
+   */
+  private async sendBlock(b: number, objects: Uint8Array[], rungs: number[], gapMs: number): Promise<void> {
+    const { paceSource = 0, paceRepair = 0, media } = this.o;
+    const k = layoutBlock(objects.map((o) => o.length)).k;
+    const repair: { d: Datagram; at: number }[] = [];
+    const pos = new Map<string, number>();
+    const t0 = performance.now();
+    let j = 0;
+    for (const d of blockDatagrams(b, objects, rungs, media.blocksPerGroup)) {
+      if (d.track === SOURCE_TRACK) {
+        if (paceSource) await until(t0 + j * paceSource * gapMs / k);
+        await this.send(d);
+        j++;
+      } else {
+        const n = pos.get(d.track) ?? 0;
+        pos.set(d.track, n + 1);
+        repair.push({ d, at: n });
       }
+    }
+    if (!repair.length) return;
+    const tRel = performance.now();
+    if (paceRepair) {
+      for (const r of repair) r.at = tRel + r.at * paceRepair * gapMs / pos.get(r.d.track)!;
+      repair.sort((x, y) => x.at - y.at);
+    }
+    for (const r of repair) {
+      if (paceRepair) await until(r.at);
+      await this.send(r.d);
     }
   }
 
