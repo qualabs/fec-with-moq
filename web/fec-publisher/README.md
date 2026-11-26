@@ -2,18 +2,24 @@
 
 A TypeScript publisher for the three-track catalog's FEC tracks, in Node, over Playa's MoQT
 (`@openmoq/webtransport` 0.7.0 from npm, draft 18 over WebTransport with the FAILS client). It
-publishes what `relay_fec.py pub --media CLIP --source-mapping datagram` publishes for a FEC player:
+publishes what `relay_fec.py pub --media CLIP --source-mapping datagram` publishes, for a FEC player
+and for a player without FEC:
 
 | Track | What | How |
 |---|---|---|
 | `catalog` | `catalogJson` of `web/fec-decoder` (MSF draft-02: `video`, `src`, `rep1..N`) | a subgroup stream per group, a new group every 2 s and at each SUBSCRIBE |
+| `video` | the clip's frames as LOC objects, for a player without FEC (`plainObjects`, as `media.py`'s `PlainTrack`) | a subgroup stream per group (GOP) |
 | `src` | one plain repair-format object per source symbol (`sourceObjects`) | OBJECT_DATAGRAM |
 | `rep1..N` | each rung's slice of the global repair symbols (`encode`, `repairObjects`) | OBJECT_DATAGRAM, after the block's source |
 
 The source objects are the clip's frames as `props_len:u16 | LOC properties | payload`, the LOC
 timestamp in the draft-18 encoding, a block of `--objects` frames every `--gap` seconds, as
-`media.py`'s `MediaBlockSchedule`. The bytes match the Python publisher's (`test/producer.test.ts`
-against `media-vectors.json`).
+`media.py`'s `MediaBlockSchedule`. The `video` track carries the same frames and timestamps, one frame
+per object: the timestamp as the object's LOC property, the frame as its payload, group = the source's
+group, object q * n + i for frame i of the group's q-th block (0 .. GOP - 1). From the LOC objects on,
+the bytes match the Python publisher's: `test/producer.test.ts` against `media-vectors.json` (`src`,
+`rep1..3`), `test/plain.test.ts` against `plain-vectors.json` and `plain-vectors-gop24.json` (`video`'s
+addresses, properties and payloads, from `PlainTrack.produce()` through `scripts/fec_plain_vectors.py`).
 
 How it sends:
 
@@ -43,6 +49,14 @@ How it sends:
   SUBSCRIBE gets a new catalog group, after the Largest Object. Objects sent while SUBSCRIBE_OK is
   being written are not sent to the new subscription. An AbsoluteRange's end stops the objects, but no
   PUBLISH_DONE follows it, and a REQUEST_UPDATE doesn't change the window.
+- **The plain track's streams.** Block b's `video` objects go out at the block's slot, on a queue of
+  their own so a slow stream doesn't hold up the datagrams. Each subscriber gets a subgroup stream per
+  group, opened at the group's first object with FIRST_OBJECT and ended with FIN after its last, the
+  header's END_OF_GROUP bit set; Python's aiomoqt instead ends a group's stream with an END_OF_GROUP
+  status object when the next group starts. A subscriber joins at the next group start, as aiomoqt's
+  lanes do (moqx subscribes with LargestObject, so it starts at the next GOP), unless its filter names
+  a start Location (AbsoluteStart, AbsoluteRange), where a stream may open mid-group. A stream cut by
+  `stop()` mid-group is reset, not ended with FIN.
 - **Session lifecycle.** A subscription is registered before its SUBSCRIBE_OK is written, and gets
   datagrams once it is accepted. Send failures are logged at the first one and then at most every 5 s
   per track. If the session closes before `stop()`, the publisher logs `SESSION-DEAD` and exits with
@@ -54,8 +68,6 @@ How it sends:
 
 **Not here (yet):**
 
-- the plain `video` track: it is in the catalog, but a SUBSCRIBE to it is refused, so a player
-  without FEC can't play;
 - FETCH: refused with NOT_SUPPORTED, the catalog's Joining FETCH included (see above);
 - END_OF_GROUP datagrams (`--repair-eog`);
 - the "repair after the source left the send buffer" policy: repair is only queued after its block's
@@ -77,6 +89,7 @@ How it sends:
 |---|---|
 | `src/mp4.ts` | the first video track of an mp4: sample bytes, key flags, AV1 codec string, size, frame rate |
 | `src/media.ts` | blocks of frames (`cutBlocks`), LOC objects and their timestamps |
+| `src/plain.ts` | one block's `video` objects: address, LOC property, frame |
 | `src/producer.ts` | one block's `src` and `rep<r>` datagrams, source before encoding; the startup limit checks; simulated loss on `src` |
 | `src/publisher.ts` | announce, answer SUBSCRIBE/FETCH, send the catalog and the blocks |
 | `src/filter.ts` | a SUBSCRIBE's filter, its window from the Largest Object, SUBSCRIBE_OK's LARGEST_OBJECT |
@@ -84,6 +97,7 @@ How it sends:
 | `src/cli.ts`, `src/options.ts` | the publisher's command line and its options and defaults |
 | `scripts/subscribe-check.ts` | a Node subscriber through the relay: counts objects per track, compares each block's datagrams with what was sent, rebuilds each block and compares its frames with the clip |
 | `scripts/player-check.mjs` | the Playa FEC test page (moq-playa `fec-with-moq-v2`), headless in the system Chrome |
+| `../../scripts/fec_plain_vectors.py` | `test/plain-vectors*.json` from `media.py`'s `PlainTrack` |
 
 ## Tests
 
@@ -151,7 +165,8 @@ PLAYA=/path/to/moq-playa node scripts/player-check.mjs --page http://127.0.0.1:P
   [--drop-src 0.05 [--max-abandoned 0]] --secs 30
 ```
 
-`--fec N` is the number of repair rungs the player takes (`0`: FEC stage on, no repair). The output is
+`--fec N` is the number of repair rungs the player takes (`0`: FEC stage on, no repair; `''`: FEC off,
+the player plays the plain `video` track). The output is
 the page's record: state, frames decoded, gaps between drawn frames, and the FEC stage's counters
 (`blocksWhole`, `blocksRecovered`, `blocksAbandoned`, `sourceLost`, `repairSymbols`), with `ok` and the
 checks that `failed`; it exits 1 if one fails. Frames must be decoded; with `--drop-src P` (the loss the

@@ -39,7 +39,7 @@ say(`MEDIA ${a.media}: ${media.blocks.length} blocks of ${n}, ${media.blocksPerG
   + `${track.width}x${track.height}@${track.fps}; catalog ${catalog.length} B; rungs [${rungs}]; drop-src ${a["drop-src"]}; pace source ${a["pace-source"]} repair ${a["pace-repair"]}`);
 
 const pub = new FecPublisher({
-  url: a.url, certHash: a.hash, namespace: a.ns, media, catalog, rungs,
+  url: a.url, certHash: a.hash, namespace: a.ns, media, catalog, rungs, plain: a["plain-track"] || undefined,
   catalogIntervalS: Number(a["catalog-interval"]),
   drop: sourceDropper(Number(a["drop-src"]), Number(a.seed)),
   paceSource: Number(a["pace-source"]), paceRepair: Number(a["pace-repair"]),

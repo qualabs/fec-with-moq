@@ -1,9 +1,9 @@
 // The FEC publisher's MoQ side: announces the namespace, answers SUBSCRIBE for `catalog`, `src` and
 // the repair rungs, sends the catalog as a new group every interval on its own subgroup stream, and
 // each block's datagrams at the block rate, the source before the repair is encoded. Each
-// subscription gets what its filter asks for, from the Largest Object its SUBSCRIBE_OK reports. FETCH is
-// refused (NOT_SUPPORTED); the plain `video` track is in the catalog but not served (DOES_NOT_EXIST),
-// so a stock player can't play it yet.
+// subscription gets what its filter asks for, from the Largest Object its SUBSCRIBE_OK reports. The
+// plain track (`video`, for players without FEC) carries the same frames as LOC objects, a subgroup
+// stream per group (GOP), as media.py's PlainTrack. FETCH is refused (NOT_SUPPORTED).
 
 import { MAX_VI64, PublishDoneCode18, RequestError18, SubgroupIdMode, vi64EncodingLength,
   type SubscriptionWindow } from "@openmoq/transport";
@@ -13,6 +13,7 @@ import { repairTrackName } from "fec-decoder/src/schedule.ts";
 import { connect } from "./connect.ts";
 import { admits, describeFilter, filterWindow, Largest, requestedFilter, subscribeOkParams } from "./filter.ts";
 import type { MediaBlocks } from "./media.ts";
+import { plainObjects, type PlainObject } from "./plain.ts";
 import { blockDatagrams, maxPayload, SOURCE_TRACK, type Datagram } from "./producer.ts";
 
 export const CATALOG_TRACK = "catalog";
@@ -35,6 +36,8 @@ export interface PublisherOptions {
   media: MediaBlocks;
   catalog: Uint8Array;
   rungs: number[];
+  /** The plain track's name (the catalog's `video`); none when absent. */
+  plain?: string;
   catalogIntervalS?: number;
   /** Return true to drop a datagram before it is sent (simulated loss on the publisher). */
   drop?: (d: Datagram) => boolean;
@@ -49,7 +52,11 @@ export interface PublisherOptions {
   onFatal?: (why: string) => void;
 }
 
-interface Sub { requestId: bigint; alias: bigint; ready: boolean; window: SubscriptionWindow }
+interface Sub {
+  requestId: bigint; alias: bigint; ready: boolean; window: SubscriptionWindow;
+  /** The filter names a start Location (AbsoluteStart / AbsoluteRange): the plain track may open a group there. */
+  absolute: boolean;
+}
 
 export interface TrackCounters { sent: number; dropped: number; failed: number }
 
@@ -62,6 +69,9 @@ export class FecPublisher {
   private datagramStats: () => Promise<{ expiredOutgoing: number; lostOutgoing: number } | null> = async () => null;
   private readonly subs = new Map<string, Sub[]>();
   private readonly largest = new Map<string, Largest>();
+  /** Each plain subscription's open subgroup stream. */
+  private readonly plainStreams = new Map<Sub, { group: number; stream: bigint }>();
+  private plainQueue: Promise<void> = Promise.resolve();
   private readonly failLog = new Map<string, FailLog>();
   private nextAlias = 1n;
   private catalogGroup = 0n;
@@ -75,7 +85,7 @@ export class FecPublisher {
   constructor(o: PublisherOptions) {
     this.o = o;
     this.log = o.log ?? ((l) => console.log(l));
-    this.tracks = [CATALOG_TRACK, SOURCE_TRACK, ...o.rungs.map((_, r) => repairTrackName(r + 1))];
+    this.tracks = [CATALOG_TRACK, ...(o.plain ? [o.plain] : []), SOURCE_TRACK, ...o.rungs.map((_, r) => repairTrackName(r + 1))];
     for (const t of this.tracks) {
       this.subs.set(t, []);
       this.largest.set(t, new Largest());
@@ -125,6 +135,10 @@ export class FecPublisher {
     this.stopped = true;
     for (const t of this.timers) clearInterval(t);
     await this.done.catch(() => {});
+    await this.plainQueue;
+    // A plain stream cut mid-group must not end with FIN: its header says it holds the group's end.
+    await Promise.all([...this.plainStreams.values()].map((p) => this.conn.resetSubgroup(p.stream).catch(() => {})));
+    this.plainStreams.clear();
     const ends = [...this.subs.values()].flat().filter((s) => s.ready)
       .map((s) => this.conn.publishDone(s.requestId, PublishDoneCode18.TRACK_ENDED, "publisher stopped").catch(() => {}));
     await Promise.race([Promise.all(ends), new Promise((r) => setTimeout(r, 1000))]);
@@ -157,7 +171,8 @@ export class FecPublisher {
     // out, so an UNSUBSCRIBE in the meantime finds it; objects go to it only once it is ready, so
     // any sent while SUBSCRIBE_OK is being written are not sent to it.
     const largest = this.largest.get(name)!.value;
-    const s: Sub = { requestId, alias: this.nextAlias++, ready: false, window: filterWindow(filter, largest) };
+    const s: Sub = { requestId, alias: this.nextAlias++, ready: false, window: filterWindow(filter, largest),
+      absolute: filter?.type === "AbsoluteStart" || filter?.type === "AbsoluteRange" };
     list.push(s);
     try {
       await this.conn.acceptSubscribe(requestId, s.alias, { parameters: subscribeOkParams(largest) });
@@ -181,7 +196,7 @@ export class FecPublisher {
   private onSubscribeClosed(requestId: bigint): void {
     for (const [name, list] of this.subs) {
       const s = list.find((x) => x.requestId === requestId);
-      if (s) { this.forget(list, s); this.log(`UNSUBSCRIBED ${name} request ${requestId}`); }
+      if (s) { this.forget(list, s); this.plainStreams.delete(s); this.log(`UNSUBSCRIBED ${name} request ${requestId}`); }
     }
   }
 
@@ -249,7 +264,52 @@ export class FecPublisher {
       const wait = tStart + b * gapMs - performance.now();
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
       if (this.stopped) break;
+      // The plain track's objects go out at the block's slot too, on their own queue: a slow
+      // stream doesn't hold up the datagrams.
+      if (this.o.plain) {
+        const objs = plainObjects(media, b, t0Us);
+        this.plainQueue = this.plainQueue.then(() => this.sendPlain(objs));
+      }
       await this.sendBlock(b, media.objects(b, t0Us), rungs, gapMs);
+    }
+  }
+
+  /**
+   * A block of the plain track to each subscriber, as aiomoqt's PER_GROUP delivery: a subgroup stream
+   * per group, opened at the group's first object (FIRST_OBJECT set) and ended with FIN after its last
+   * (the header's END_OF_GROUP bit set). A subscriber joins at a group start, as aiomoqt's lanes do,
+   * unless its filter names a start Location inside a group.
+   */
+  private async sendPlain(objs: PlainObject[]): Promise<void> {
+    const name = this.o.plain!;
+    const n = this.counters.get(name)!;
+    for (const o of objs) {
+      this.largest.get(name)!.note(o.group, o.object);
+      for (const s of this.subs.get(name)!) {
+        if (!s.ready || !admits(s.window, o.group, o.object)) continue;
+        let p = this.plainStreams.get(s);
+        try {
+          if (!p) {
+            const atStart = s.absolute && BigInt(o.group) === s.window.start.group && BigInt(o.object) === s.window.start.object;
+            if (!o.groupStart && !atStart) continue;
+            const stream = await this.conn.openSubgroup(s.alias, BigInt(o.group), 0n, {
+              requestId: s.requestId, endOfGroup: true, hasExtensions: true, defaultPriority: true,
+              subgroupIdMode: SubgroupIdMode.ZERO, firstObject: o.groupStart,
+            });
+            p = { group: o.group, stream };
+            this.plainStreams.set(s, p);
+          }
+          await this.conn.sendObject(p.stream, BigInt(o.object), o.payload, o.properties);
+          n.sent++;
+          if (o.groupEnd) {
+            this.plainStreams.delete(s);
+            await this.conn.closeSubgroup(p.stream);
+          }
+        } catch (e) {
+          this.failed(name, n, `object ${o.group}.${o.object}: ${(e as Error).message}`);
+          if (p) { this.plainStreams.delete(s); void this.conn.resetSubgroup(p.stream).catch(() => {}); }
+        }
+      }
     }
   }
 

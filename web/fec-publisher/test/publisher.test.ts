@@ -32,6 +32,7 @@ class FakeConn {
   datagrams: Sent[] = [];
   subgroups: Sent[] = [];
   onDatagram: (d: Sent) => void = () => {};
+  onObject: (d: Sent) => void = () => {};
   private nextId = 0n;
 
   subscribe(name: string, f?: SubscriptionFilter): bigint {
@@ -49,9 +50,19 @@ class FakeConn {
     this.onDatagram(d);
     this.datagrams.push(d);
   }
-  async openSubgroup(alias: bigint, group: bigint) { return { alias, group }; }
-  async sendObject(s: { alias: bigint; group: bigint }, object: bigint) { this.subgroups.push({ ...s, object }); }
-  async closeSubgroup() {}
+  streams: { alias: bigint; group: bigint; firstObject?: boolean; objects: bigint[]; props: Uint8Array[]; end?: string }[] = [];
+  async openSubgroup(alias: bigint, group: bigint, _sub: bigint, o: { firstObject?: boolean }) {
+    this.streams.push({ alias, group, firstObject: o.firstObject, objects: [], props: [] });
+    return { alias, group, i: this.streams.length - 1 };
+  }
+  async sendObject(s: { alias: bigint; group: bigint; i: number }, object: bigint, _p: Uint8Array, props?: Uint8Array) {
+    this.onObject({ alias: s.alias, group: s.group, object });
+    this.subgroups.push({ alias: s.alias, group: s.group, object });
+    this.streams[s.i].objects.push(object);
+    if (props) this.streams[s.i].props.push(props);
+  }
+  async closeSubgroup(s: { i: number }) { this.streams[s.i].end = "fin"; }
+  async resetSubgroup(s: { i: number }) { this.streams[s.i].end = "reset"; }
   async publishDone() {}
 }
 
@@ -63,10 +74,10 @@ const ALL = Array.from({ length: 6 }, (_, b) => [...blockDatagrams(b, media.obje
 const at = (track: string, from: [number, number]) => ALL.filter((d) => d.track === track
   && (d.group > from[0] || (d.group === from[0] && d.object >= from[1]))).map((d) => [d.group, d.object]);
 
-async function run(subscribe: (c: FakeConn) => void): Promise<FakeConn> {
+async function run(subscribe: (c: FakeConn) => void, plain?: string): Promise<FakeConn> {
   const c = new FakeConn();
   const pub = new FecPublisher({ url: "", namespace: "ns", media, catalog: new Uint8Array([1]), rungs: RUNGS,
-    blocks: 6, log: () => {} });
+    blocks: 6, log: () => {}, plain });
   pub.attach(c as unknown as MoqtConnection);
   subscribe(c);
   await pub.serve();
@@ -127,4 +138,30 @@ test("requestedFilter and subscribeOkParams: the draft-18 parameters", () => {
   assert.deepEqual(filterWindow({ type: "NextGroupStart" }, undefined).start, { group: 0n, object: 0n });
   assert.equal(subscribeOkParams(undefined).size, 0);
   assert.deepEqual(subscribeOkParams({ group: 2n, object: 5n }).get(MessageParam.LARGEST_OBJECT), [{ group: 2n, object: 5n }]);
+});
+
+test("plain track: a stream per group, FIRST_OBJECT and FIN, joined at a group start; the frames' LOC properties", async () => {
+  const ids: Record<string, bigint> = {};
+  const c = await run((c) => {
+    ids.first = c.subscribe("video");
+    c.onObject = (d) => {
+      // at block 1's first frame (group 0's second block)
+      if (ids.late === undefined && d.group === 0n && d.object === 12n) {
+        ids.late = c.subscribe("video", { type: "LargestObject" });
+        ids.next = c.subscribe("video", { type: "NextGroupStart" });
+        ids.abs = c.subscribe("video", { type: "AbsoluteStart", startGroup: 1n, startObject: 5n });
+      }
+    };
+  }, "video");
+  const streams = (id: bigint) => c.streams.filter((s) => s.alias === c.accepted.get(id)!.alias)
+    .map((s) => [Number(s.group), s.firstObject, s.objects.map(Number), s.end]);
+  const all = Array.from({ length: 24 }, (_, i) => i);
+  assert.deepEqual(streams(ids.first), [[0, true, all, "fin"], [1, true, all, "fin"], [2, true, all, "fin"]]);
+  // block 1's objects (13..23) are in LargestObject's window, but the stream waits for the next group start
+  assert.deepEqual(c.accepted.get(ids.late)!.largest, { group: 0n, object: 12n });
+  assert.deepEqual(streams(ids.late), [[1, true, all, "fin"], [2, true, all, "fin"]]);
+  assert.deepEqual(streams(ids.next), [[1, true, all, "fin"], [2, true, all, "fin"]]);
+  assert.deepEqual(streams(ids.abs), [[1, false, all.slice(5), "fin"], [2, true, all, "fin"]]);
+  // every object carries its LOC properties (their bytes: test/plain.test.ts)
+  for (const st of c.streams) assert.equal(st.props.length, st.objects.length);
 });

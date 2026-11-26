@@ -59,9 +59,14 @@ export class MediaBlocks {
     return this.blocks[b % this.blocks.length].map((s) => s.payload);
   }
 
+  /** Block b's frames and their LOC timestamps, stamped from t0Us: what the source objects and the plain track carry. */
+  frames(b: number, t0Us: number): { timestampUs: number; payload: Uint8Array }[] {
+    const gapUs = this.gapS * 1e6, frameUs = gapUs / this.n;
+    return this.payloads(b).map((payload, i) => ({ timestampUs: t0Us + Math.trunc(b * gapUs + i * frameUs), payload }));
+  }
+
   /** Block b's source objects, stamped from t0Us. */
   objects(b: number, t0Us: number): Uint8Array[] {
-    const gapUs = this.gapS * 1e6, frameUs = gapUs / this.n;
-    return this.payloads(b).map((p, i) => packLocObject(locProperties(t0Us + Math.trunc(b * gapUs + i * frameUs)), p));
+    return this.frames(b, t0Us).map((f) => packLocObject(locProperties(f.timestampUs), f.payload));
   }
 }
