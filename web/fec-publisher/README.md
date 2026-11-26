@@ -15,11 +15,49 @@ timestamp in the draft-18 encoding, a block of `--objects` frames every `--gap` 
 `media.py`'s `MediaBlockSchedule`. The bytes match the Python publisher's (`test/producer.test.ts`
 against `media-vectors.json`).
 
-**Not here (yet):** the plain `video` track (it is in the catalog, but a SUBSCRIBE to it is refused,
-so a player without FEC can't play), FETCH (refused with NOT_SUPPORTED), END_OF_GROUP datagrams
-(`--repair-eog`), the "repair after the source left the send buffer" policy (repair is only queued
-after its block's source, in one datagram queue) and H.264 input (AV1 only: its sequence header travels
-in band, so a LOC frame needs no decoder description).
+How it sends:
+
+- **Source before repair, and before encoding.** A block's `src` datagrams are all sent before its
+  repair is encoded (`blockDatagrams` is a generator), then each rung's repair follows.
+- **Pacing.** `--pace-source F` spreads a block's source over F of the block period and
+  `--pace-repair F` each rung's repair over F of it after the source, as `relay_fec.py`'s options of
+  the same name. The default is 0 (back to back), as in Python. Back to back loses datagrams at a
+  realistic bitrate: FAILS drops a datagram it can't queue without an error. On a 1080p60 AV1 clip at
+  4.5 Mbps, at 0 % loss, about 40 % of the datagrams didn't arrive without pacing, and none did with
+  `--pace-source 0.5 --pace-repair 0.4`.
+- **Checks before sending.** Every block of the clip is checked at startup (an object over 65535 B, a
+  payload over the 1152 B datagram ceiling, k + m over 256), and so is the largest datagram against
+  the session's `maxDatagramSize`; the publisher refuses to start (exit 2, or 1 after connecting) with
+  a message instead of failing mid-run.
+- **Session lifecycle.** A subscription is registered before its SUBSCRIBE_OK is written, and gets
+  datagrams once it is accepted. Send failures are logged at the first one and then at most every 5 s
+  per track. If the session closes before `stop()`, the publisher logs `SESSION-DEAD` and exits with
+  status 4, like `relay_fec.py`. `stop()` sends PUBLISH_DONE (TRACK_ENDED) to each subscription.
+- **Catalog by Joining FETCH.** Playa's default `catalogBootstrap` (`auto`, SUBSCRIBE plus a Joining
+  FETCH) works through moqx without serving FETCH: in the runs of 2026-11-26 the FETCH never reached
+  the publisher. moqx answered it itself, with REQUEST_ERROR "No objects published for track" when it
+  held no catalog group yet, and Playa took the catalog from the subscription.
+
+**Not here (yet):**
+
+- the plain `video` track: it is in the catalog, but a SUBSCRIBE to it is refused, so a player
+  without FEC can't play;
+- FETCH: refused with NOT_SUPPORTED, the catalog's Joining FETCH included (see above);
+- END_OF_GROUP datagrams (`--repair-eog`);
+- the "repair after the source left the send buffer" policy: repair is only queued after its block's
+  source, in one datagram queue;
+- H.264 input: AV1 only, since its sequence header travels in band and a LOC frame needs no decoder
+  description;
+- still open from the expert review of 2026-11-26 (findings by number):
+  - 6: `--drop-src` is i.i.d. loss on the source before the wire. It is a functional test, not a
+    measure of what FEC gains; a number needs netem or a burst model, stated with the result;
+  - 10: the SUBSCRIBE filter is ignored and SUBSCRIBE_OK carries no Largest Object, so a
+    NextGroupStart subscription gets datagrams from the next block, not the next group;
+  - 12: the bytes match Python's from the LOC objects onward only. The two publishers never read the
+    same clip;
+  - 13: no ADR yet scopes this TS publisher against the umbrella ADR 0001;
+  - 14: the publisher runs npm `@openmoq/webtransport` 0.7.0 and the player the fork at `60d877a`.
+    Both are draft 18, and the run evidence records both.
 
 ## Files
 
@@ -27,11 +65,11 @@ in band, so a LOC frame needs no decoder description).
 |---|---|
 | `src/mp4.ts` | the first video track of an mp4: sample bytes, key flags, AV1 codec string, size, frame rate |
 | `src/media.ts` | blocks of frames (`cutBlocks`), LOC objects and their timestamps |
-| `src/producer.ts` | one block's `src` and `rep<r>` datagrams; simulated loss on `src` |
+| `src/producer.ts` | one block's `src` and `rep<r>` datagrams, source before encoding; the startup limit checks; simulated loss on `src` |
 | `src/publisher.ts` | announce, answer SUBSCRIBE/FETCH, send the catalog and the blocks |
 | `src/collector.ts` | the other end, for checks: datagrams back into blocks, decoded with `web/fec-decoder` |
 | `src/cli.ts` | the publisher's command line |
-| `scripts/subscribe-check.ts` | a Node subscriber through the relay: counts objects per track, rebuilds each block and compares its frames with the clip |
+| `scripts/subscribe-check.ts` | a Node subscriber through the relay: counts objects per track, compares each block's datagrams with what was sent, rebuilds each block and compares its frames with the clip |
 | `scripts/player-check.mjs` | the Playa FEC test page (moq-playa `fec-with-moq-v2`), headless in the system Chrome |
 
 ## Tests
@@ -60,16 +98,34 @@ ffmpeg -f lavfi -i testsrc2=size=640x360:rate=60 -t 10 -c:v libsvtav1 -preset 10
   -svtav1-params irefresh-type=2:pred-struct=1 -pix_fmt yuv420p clip.mp4
 # 4. the publisher (in web/fec-publisher); --drop-src 0.05 drops 5% of the src datagrams before sending
 node src/cli.ts --url https://127.0.0.1:4473/moq-relay --hash $HASH --ns fec-$RANDOM --media $RUN/clip.mp4 \
-  [--rungs 0.15,0.15,0.15 | --rungs ''] [--drop-src 0.05] [--secs 60]
+  [--rungs 0.15,0.15,0.15 | --rungs ''] [--drop-src 0.05] [--gop-frames 120] \
+  [--pace-source 0.5 --pace-repair 0.4] [--secs 60]
+```
+
+A realistic clip, Marc's defaults (1080p60, a 2 s GOP, so `--gop-frames 120`: ten 12-frame blocks per
+group). With CBR and no hierarchy, no frame is near the 65535 B limit:
+
+```sh
+ffmpeg -f lavfi -i testsrc2=size=1920x1080:rate=60 -vf noise=alls=8:allf=t -t 20 -c:v libsvtav1 -preset 10 \
+  -g 120 -b:v 4500k -svtav1-params rc=2:irefresh-type=2:pred-struct=1:hierarchical-levels=0 -pix_fmt yuv420p clip1080.mp4
 ```
 
 **Check with the Node subscriber** (same namespace, while the publisher runs): it subscribes to the
-catalog, `src` and the first `--take` rungs, then prints the objects per track and how many blocks
-arrived intact, were recovered or were lost; it exits 1 if no `src` datagram arrived or a frame differs
-from the clip's.
+catalog, `src` and the first `--take` rungs, then prints one JSON object:
+
+- the objects per track;
+- per block, the datagrams that arrived against those sent (k source and each taken rung's slice,
+  from the catalog and the clip), in `datagrams` and `shortDetail`;
+- how many blocks arrived intact, were recovered, were lost, or had no datagram at all (`missing`).
+
+Only blocks after every block that had a datagram before the last rung's SUBSCRIBE_OK, and before the
+last block seen, are counted. It exits 1 if no `src` datagram arrived, a frame differs from the clip's,
+or a check it was asked for fails: `--expect-all` (every datagram sent arrived; at `--drop-src 0`),
+`--expect-recovered MIN` (at least MIN blocks recovered and none lost).
 
 ```sh
-node scripts/subscribe-check.ts --url https://127.0.0.1:4473/moq-relay --hash $HASH --ns NS --media $RUN/clip.mp4 --take 3 --secs 10
+node scripts/subscribe-check.ts --url https://127.0.0.1:4473/moq-relay --hash $HASH --ns NS --media $RUN/clip.mp4 \
+  --take 3 --secs 10 [--expect-all | --expect-recovered 1]
 ```
 
 **Check with the Playa FEC player.** Build the examples of moq-playa `fec-with-moq-v2` (its
@@ -78,12 +134,17 @@ serve `examples/dist` on 127.0.0.1, then:
 
 ```sh
 PLAYA=/path/to/moq-playa node scripts/player-check.mjs --page http://127.0.0.1:PAGE_PORT \
-  --url https://127.0.0.1:4473/moq-relay --ns NS --hash $HASH --fec 3 [--cb subscribe|auto] --secs 30
+  --url https://127.0.0.1:4473/moq-relay --ns NS --hash $HASH --fec 3 [--cb subscribe|auto | --demo] \
+  [--drop-src 0.05 [--max-abandoned 0]] --secs 30
 ```
 
 `--fec N` is the number of repair rungs the player takes (`0`: FEC stage on, no repair). The output is
 the page's record: state, frames decoded, gaps between drawn frames, and the FEC stage's counters
-(`blocksWhole`, `blocksRecovered`, `blocksAbandoned`, `sourceLost`, `repairSymbols`). To watch it,
-open `examples/fec-with-moq/demo.html?url=…&ns=…&ver=draft-18&fec=1&rungs=3&overlay=1&certHash=$HASH`.
+(`blocksWhole`, `blocksRecovered`, `blocksAbandoned`, `sourceLost`, `repairSymbols`), with `ok` and the
+checks that `failed`; it exits 1 if one fails. Frames must be decoded; with `--drop-src P` (the loss the
+publisher was started with) the FEC stage must also have lost source, recovered blocks and abandoned at
+most `--max-abandoned` (0). `--demo` opens `demo.html` instead, which uses Playa's default
+`catalogBootstrap`. To watch it, open
+`examples/fec-with-moq/demo.html?url=…&ns=…&ver=draft-18&fec=1&rungs=3&overlay=1&certHash=$HASH`.
 
 Stop with Ctrl-C (or `--secs`), then `docker rm -f moqx-fec; rm -rf $RUN`.
