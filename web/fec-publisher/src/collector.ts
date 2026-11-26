@@ -36,6 +36,11 @@ export class BlockCollector {
     return [...this.blocks.keys()].sort((x, y) => x - y);
   }
 
+  /** Block b's object sizes, from any of its datagrams; undefined if none arrived. */
+  sizes(b: number): number[] | undefined {
+    return this.blocks.get(b)?.sizes;
+  }
+
   decode(b: number): BlockOutcome {
     const p = this.blocks.get(b);
     if (!p) throw new RangeError(`no datagram of block ${b}`);

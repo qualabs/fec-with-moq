@@ -1,9 +1,14 @@
 // Marc's Playa FEC test page (examples/fec-with-moq/index.html of moq-playa branch fec-with-moq-v2),
-// headless in the system Chrome, for SECS seconds; prints the summary playa_play.py prints, trimmed.
-// Playwright comes from the Playa checkout (PLAYA=/path/to/moq-playa, after its pnpm install).
+// headless in the system Chrome, for SECS seconds; prints the summary playa_play.py prints, trimmed,
+// with the checks below, and exits 1 if one fails: frames decoded; with --drop-src P > 0 (the loss
+// the publisher was started with) also source lost, blocks recovered, and at most --max-abandoned
+// blocks abandoned. --demo opens demo.html instead (Playa's default catalogBootstrap, no cb) and reads
+// the player's stats and fecStats() from it. Playwright comes from the Playa checkout
+// (PLAYA=/path/to/moq-playa, after its pnpm install).
 //
 //   PLAYA=... node scripts/player-check.mjs --page http://127.0.0.1:8283 --url URL --ns NS --hash HEX
-//     [--fec 3] [--cb subscribe] [--secs 30] [--chrome /usr/bin/google-chrome]
+//     [--fec 3] [--cb subscribe|auto] [--demo] [--drop-src P] [--max-abandoned N] [--secs 30]
+//     [--log warn] [--console 15] [--chrome /usr/bin/google-chrome]
 
 import { createRequire } from "node:module";
 import { parseArgs } from "node:util";
@@ -14,6 +19,8 @@ const { values: a } = parseArgs({
     fec: { type: "string", default: "3" }, cb: { type: "string", default: "subscribe" },
     secs: { type: "string", default: "30" }, log: { type: "string", default: "warn" },
     chrome: { type: "string", default: "/usr/bin/google-chrome" },
+    demo: { type: "boolean", default: false }, "drop-src": { type: "string", default: "0" },
+    "max-abandoned": { type: "string", default: "0" }, console: { type: "string", default: "15" },
   },
 });
 if (!process.env.PLAYA || !a.page || !a.url || !a.ns) {
@@ -22,17 +29,25 @@ if (!process.env.PLAYA || !a.page || !a.url || !a.ns) {
 }
 const { chromium } = createRequire(`${process.env.PLAYA}/package.json`)("playwright");
 
-const q = new URLSearchParams({ url: a.url, ns: a.ns, v: "18", log: a.log, cb: a.cb });
-if (a.hash) q.set("hash", a.hash);
-if (a.fec) { q.set("fec", a.fec); q.set("deadline", "600"); }
+const q = a.demo
+  ? new URLSearchParams({ url: a.url, ns: a.ns, ver: "draft-18", log: a.log, fec: a.fec ? "1" : "0", rungs: a.fec || "0" })
+  : new URLSearchParams({ url: a.url, ns: a.ns, v: "18", log: a.log, cb: a.cb });
+if (a.hash) q.set(a.demo ? "certHash" : "hash", a.hash);
+if (a.fec) q.set("deadline", "600");
+if (!a.demo && a.fec) q.set("fec", a.fec);
 const browser = await chromium.launch({ executablePath: a.chrome, headless: true, args: ["--autoplay-policy=no-user-gesture-required"] });
 const page = await browser.newPage();
 const consoleLines = [];
 page.on("console", (m) => consoleLines.push(`${m.type()}: ${m.text().slice(0, 300)}`));
 page.on("pageerror", (e) => consoleLines.push(`pageerror: ${String(e).slice(0, 300)}`));
-await page.goto(`${a.page}/fec-with-moq/index.html?${q}`);
+await page.goto(`${a.page}/fec-with-moq/${a.demo ? "demo" : "index"}.html?${q}`);
 await new Promise((r) => setTimeout(r, Number(a.secs) * 1000));
-const run = await page.evaluate(() => window.playaRun);
+// demo.html keeps no playaRun: the same fields from the Player, fecStats() and demoLog
+const run = await page.evaluate(() => window.playaRun ?? {
+  state: window.playaPlayer?.state, stats: [{ ...window.playaPlayer?.stats }],
+  fec: window.fecStage ? { ...window.fecStats(), blockLog: window.fecStage.blockLog } : null,
+  errors: (window.demoLog ?? []).filter((l) => /error|FAILED|unhandled/i.test(l)), demoLog: (window.demoLog ?? []).slice(-15),
+});
 await browser.close();
 
 const stats = run?.stats ?? [];
@@ -42,7 +57,15 @@ const gaps = draws.slice(1).map((t, i) => t - draws[i]);
 const fec = run?.fec;
 const keep = ["blocksSeen", "blocksWhole", "blocksRecovered", "blocksAbandoned", "blocksMissing", "blocksSkipped",
   "framesReleased", "framesDropped", "sourceSymbols", "sourceLost", "repairSymbols", "decodeCount", "decodeFailures"];
+const drop = Number(a["drop-src"]), maxAbandoned = Number(a["max-abandoned"]);
+const checks = [["framesDecoded > 0", (last.framesDecoded ?? 0) > 0]];
+if (drop > 0) {
+  checks.push(["fec.sourceLost > 0", (fec?.sourceLost ?? 0) > 0], ["fec.blocksRecovered > 0", (fec?.blocksRecovered ?? 0) > 0],
+    [`fec.blocksAbandoned <= ${maxAbandoned}`, fec != null && (fec.blocksAbandoned ?? 0) <= maxAbandoned]);
+}
+const failed = checks.filter(([, ok]) => !ok).map(([c]) => c);
 console.log(JSON.stringify({
+  page: a.demo ? "demo.html" : `index.html cb=${a.cb}`, ok: failed.length === 0, failed,
   protocol: (run?.webtransport ?? []).map((w) => w.protocol),
   wtErrors: (run?.webtransport ?? []).map((w) => w.error).filter(Boolean),
   state: run?.state,
@@ -55,5 +78,7 @@ console.log(JSON.stringify({
   fecNotWhole: (fec?.blockLog ?? []).filter((b) => b.outcome !== "whole" && b.outcome !== "recovered").slice(0, 10),
   firstDrawAtMs: draws[0] ?? null,
   gapsOver100msAt: draws.slice(1).map((t, i) => [Math.round(draws[i]), Math.round(t - draws[i])]).filter(([, g]) => g > 100),
-  console: consoleLines.slice(-15),
+  demoLog: run?.demoLog,
+  console: consoleLines.slice(-Number(a.console)),
 }, null, 1));
+process.exit(failed.length ? 1 : 0);
