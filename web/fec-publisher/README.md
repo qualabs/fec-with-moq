@@ -23,8 +23,9 @@ How it sends:
   `--pace-repair F` each rung's repair over F of it after the source, as `relay_fec.py`'s options of
   the same name. The default is 0 (back to back), as in Python. Back to back loses datagrams at a
   realistic bitrate: FAILS drops a datagram it can't queue without an error. On a 1080p60 AV1 clip at
-  4.5 Mbps, at 0 % loss, about 40 % of the datagrams didn't arrive without pacing, and none did with
-  `--pace-source 0.5 --pace-repair 0.4`.
+  4.5 Mbps, at 0 % loss through a local moqx, about 40 % of the datagrams didn't arrive without
+  pacing. With `--pace-source 0.5 --pace-repair 0.4` all of them arrived in two runs out of four; the
+  other two each lost a burst in one episode on a loaded machine (23 and 691 datagrams, up to 7 %). Pacing is not a guarantee.
 - **Checks before sending.** Every block of the clip is checked at startup (an object over 65535 B, a
   payload over the 1152 B datagram ceiling, k + m over 256), and so is the largest datagram against
   the session's `maxDatagramSize`; the publisher refuses to start (exit 2, or 1 after connecting) with
