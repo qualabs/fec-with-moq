@@ -7,9 +7,12 @@
 // with --expect-all / --expect-recovered fails.
 //
 //   node scripts/subscribe-check.ts --url URL --hash HEX --ns NS --media CLIP.mp4 [--take 3] [--secs 15]
-//     [--expect-all] [--expect-recovered MIN]
+//     [--expect-all] [--expect-recovered MIN] [--blocks-out FILE]
+//
+// --blocks-out writes every counted block's datagrams per track (received/sent) and its outcome, to
+// set beside another subscriber's view of the same blocks.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { layoutBlock } from "fec-decoder/src/layout.ts";
 import { address, rungSlices } from "fec-decoder/src/schedule.ts";
@@ -24,11 +27,12 @@ const { values: a } = parseArgs({
     url: { type: "string" }, hash: { type: "string" }, ns: { type: "string" }, media: { type: "string" },
     take: { type: "string", default: "3" }, secs: { type: "string", default: "15" },
     "expect-all": { type: "boolean", default: false }, "expect-recovered": { type: "string" },
+    "blocks-out": { type: "string" },
   },
 });
 if (!a.url || !a.ns || !a.media) {
   console.error("usage: node scripts/subscribe-check.ts --url URL [--hash HEX] --ns NS --media CLIP.mp4 [--take N] [--secs S] "
-    + "[--expect-all] [--expect-recovered MIN]");
+    + "[--expect-all] [--expect-recovered MIN] [--blocks-out FILE]");
   process.exit(2);
 }
 const say = (l: string) => console.error(`${new Date().toISOString()} [sub] ${l}`);
@@ -104,6 +108,7 @@ const tally = { intact: 0, recovered: 0, lost: 0, missing: 0, frameMismatch: 0 }
 const lostDetail: string[] = [];
 const sent = { expected: 0, received: 0, missingSrc: 0, missingRep: 0, blocksShort: 0 };
 const shortDetail: string[] = [];
+const perBlock: Record<number, Record<string, string>> = {};
 for (const b of ids) {
   // k from the block's own datagrams, or (none arrived) from the clip's LOC objects
   const g = got.get(b) ?? {};
@@ -125,9 +130,11 @@ for (const b of ids) {
         + Object.entries(expect).map(([t, n]) => `${t} ${g[t] ?? 0}/${n}`).join(" "));
     }
   }
-  if (!collector.sizes(b)) { tally.missing++; lostDetail.push(`block ${b}: no datagram`); continue; }
+  perBlock[b] = Object.fromEntries(Object.entries(expect).map(([t, n]) => [t, `${g[t] ?? 0}/${n}`]));
+  if (!collector.sizes(b)) { tally.missing++; perBlock[b].status = "missing"; lostDetail.push(`block ${b}: no datagram`); continue; }
   const r = collector.decode(b);
   tally[r.status]++;
+  perBlock[b].status = r.status;
   if (r.status === "lost") { lostDetail.push(`block ${b}: k ${r.k} source ${r.source} repair ${r.repair}`); continue; }
   const want = media.payloads(b);
   r.objects.forEach((o, i) => {
@@ -149,4 +156,5 @@ const out = {
   ok: failures.length === 0, failures,
 };
 console.log(JSON.stringify(out, null, 1));
+if (a["blocks-out"]) writeFileSync(a["blocks-out"], JSON.stringify(perBlock, null, 0).replace(/},/g, "},\n") + "\n");
 process.exit(failures.length ? 1 : 0);

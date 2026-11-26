@@ -9,6 +9,8 @@ export interface Connected {
   conn: MoqtConnection;
   /** The session's datagram ceiling once ready (wt.datagrams.maxDatagramSize; 0 if FAILS doesn't know). */
   maxDatagramSize: number;
+  /** QUIC's datagram counters for this session: queued datagrams that expired unsent, sent ones declared lost. */
+  datagramStats(): Promise<{ expiredOutgoing: number; lostOutgoing: number } | null>;
   close(): Promise<void>;
 }
 
@@ -34,6 +36,16 @@ export async function connect(url: string, certHash: string | undefined,
   return {
     conn,
     maxDatagramSize,
+    async datagramStats() {
+      try {
+        const st = await Promise.race([wt.getStats(), new Promise<null>((r) => setTimeout(() => r(null), 1000))]);
+        if (!st) return null;
+        const d = st.datagrams;
+        return { expiredOutgoing: Number(d.expiredOutgoing), lostOutgoing: Number(d.lostOutgoing) };
+      } catch {
+        return null;
+      }
+    },
     async close() {
       await conn.close().catch(() => {});   // closes the WebTransport session too
       await Promise.race([wt.closed.catch(() => {}), new Promise((r) => setTimeout(r, 2000))]);

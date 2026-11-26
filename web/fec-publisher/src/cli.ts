@@ -55,14 +55,15 @@ const pub = new FecPublisher({
   // As relay_fec.py's SESSION-DEAD: a publisher whose session is gone exits with status 4.
   onFatal: () => void stop(4),
 });
-const stats = setInterval(() => say(`STATS ${pub.summary()}`), 5000);
+const stats = setInterval(() => void pub.quicSummary().then((q) => say(`STATS ${pub.summary()}; ${q}`)), 5000);
 let stopping = false;
 const stop = async (code: number) => {
   if (stopping) return;
   stopping = true;
   clearInterval(stats);
+  const q = await pub.quicSummary();
   await pub.stop();
-  say(`DONE ${pub.summary()}`);
+  say(`DONE ${pub.summary()}; ${q}`);
   process.exit(code);
 };
 process.on("SIGINT", () => void stop(0));

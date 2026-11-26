@@ -59,6 +59,7 @@ export class FecPublisher {
   readonly counters = new Map<string, TrackCounters>();
   private conn!: MoqtConnection;
   private closeConn: () => Promise<void> = async () => {};
+  private datagramStats: () => Promise<{ expiredOutgoing: number; lostOutgoing: number } | null> = async () => null;
   private readonly subs = new Map<string, Sub[]>();
   private readonly largest = new Map<string, Largest>();
   private readonly failLog = new Map<string, FailLog>();
@@ -85,6 +86,7 @@ export class FecPublisher {
   async start(): Promise<void> {
     const c = await connect(this.o.url, this.o.certHash, (conn) => this.attach(conn));
     this.closeConn = c.close;
+    this.datagramStats = c.datagramStats;
     const worst = maxPayload(this.o.media.n) + MAX_DATAGRAM_HEADER;
     this.log(`CONNECTED ${this.o.url} draft 18; maxDatagramSize ${c.maxDatagramSize || "unknown"}, `
       + `largest datagram ${worst} B`);
@@ -291,5 +293,11 @@ export class FecPublisher {
       const c = this.counters.get(t)!;
       return `${t} sent ${c.sent} dropped ${c.dropped} failed ${c.failed} subs ${this.subs.get(t)!.length}`;
     }).join("; ");
+  }
+
+  /** The session's QUIC datagram counters: what "sent" above handed to QUIC that never left or was lost. */
+  async quicSummary(): Promise<string> {
+    const d = await this.datagramStats();
+    return d ? `quic datagrams expired ${d.expiredOutgoing} lost ${d.lostOutgoing}` : "quic datagram stats unavailable";
   }
 }
