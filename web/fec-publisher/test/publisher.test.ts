@@ -76,8 +76,7 @@ class FakeConn {
 
 // 6 blocks of 12 frames, 2 blocks per group (a GOP of 24): groups 0, 1 and 2.
 const samples = Array.from({ length: 48 }, (_, i) => ({ payload: new Uint8Array(900).fill(i), key: i % 24 === 0 }));
-// 50 ms a block: unpaced, a block's repair is out before the next block's slot.
-const media = new MediaBlocks({ codec: "av01.0.04M.08", width: 2, height: 2, fps: 60, samples }, 12, 0.05, 24);
+const media = new MediaBlocks({ codec: "av01.0.04M.08", width: 2, height: 2, fps: 60, samples }, 12, 0.005, 24);
 const RUNGS = [0.15, 0.15, 0.15];
 const ALL = Array.from({ length: 6 }, (_, b) => [...blockDatagrams(b, media.objects(b, 0), RUNGS, 2)]).flat();
 const at = (track: string, from: [number, number]) => ALL.filter((d) => d.track === track
@@ -113,15 +112,37 @@ test("filters: subscriptions made in group 0's second block get what their filte
     };
   });
   const rep1 = ALL.filter((d) => d.track === "rep1" && d.group === 0);
-  const rep2 = ALL.filter((d) => d.track === "rep2" && d.group === 0 && d.object < 256);
   // SUBSCRIBE_OK reports the last object each track sent: block 0's
   assert.deepEqual(c.accepted.get(ids.next)!.largest, { group: 0n, object: BigInt(rep1.filter((d) => d.object < 256).at(-1)!.object) });
   assert.equal(c.accepted.get(ids.first)!.largest, undefined);
   assert.deepEqual(sentTo(c, ids.first), at("src", [0, 0]));
   assert.deepEqual(sentTo(c, ids.next), at("rep1", [1, 0]));                       // not block 1: it is mid-group
-  assert.deepEqual(sentTo(c, ids.largest), at("rep2", [0, rep2.at(-1)!.object + 1])); // from block 1
+  // LargestObject and no filter open after block 0's repair, but block 1's source has started:
+  // both start at block 2 (group 1), not with block 1's repair
+  assert.deepEqual(sentTo(c, ids.largest), at("rep2", [1, 0]));
   assert.deepEqual(sentTo(c, ids.abs), at("src", [2, 0]));
-  assert.deepEqual(sentTo(c, ids.whole), at("rep3", [0, 256]));                    // no filter: from block 1, still to come
+  assert.deepEqual(sentTo(c, ids.whole), at("rep3", [1, 0]));
+});
+
+test("join: src and the rungs subscribed mid-block start at the same block start; AbsoluteStart where it says", async () => {
+  const ids: Record<string, bigint> = {};
+  const c = await run((c) => {
+    c.onDatagram = (d) => {
+      // block 3's third source datagram (group 1, object 258), with no subscriber on the rungs yet
+      if (ids.src === undefined && d.group === 1n && d.object === 258n) {
+        ids.src = c.subscribe("src", { type: "LargestObject" });
+        ids.rep1 = c.subscribe("rep1", { type: "LargestObject" });
+        ids.rep2 = c.subscribe("rep2");
+        ids.abs = c.subscribe("rep3", { type: "AbsoluteStart", startGroup: 1n, startObject: 256n });
+      }
+    };
+    c.subscribe("src");
+  });
+  assert.deepEqual(c.accepted.get(ids.src)!.largest, { group: 1n, object: 258n });
+  assert.deepEqual(sentTo(c, ids.src), at("src", [2, 0]));          // block 4, not the rest of block 3
+  assert.deepEqual(sentTo(c, ids.rep1), at("rep1", [2, 0]));        // block 3's repair is still to come: skipped
+  assert.deepEqual(sentTo(c, ids.rep2), at("rep2", [2, 0]));
+  assert.deepEqual(sentTo(c, ids.abs), at("rep3", [1, 256]));       // block 3's repair
 });
 
 test("filters: the catalog's group at SUBSCRIBE is after the Largest Object, so NextGroupStart takes it", async () => {

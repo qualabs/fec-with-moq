@@ -2,7 +2,8 @@
 // the repair rungs, sends the catalog as a new group every interval on its own subgroup stream, and
 // each block's datagrams at the block rate, the source before the repair is encoded and each rung's
 // repair as a task of its own, so the next block's source keeps its slot. Each
-// subscription gets what its filter asks for, from the Largest Object its SUBSCRIBE_OK reports. The
+// subscription gets what its filter asks for, from the Largest Object its SUBSCRIBE_OK reports; a
+// late subscription to `src` or a rung starts at a block start, the same block on every one. The
 // plain track (`video`, for players without FEC) carries the same frames as LOC objects, a subgroup
 // stream per group (GOP). FETCH is refused (NOT_SUPPORTED).
 
@@ -62,6 +63,8 @@ interface Sub {
   requestId: bigint; alias: bigint; ready: boolean; window: SubscriptionWindow;
   /** The filter names a start Location (AbsoluteStart / AbsoluteRange): the plain track may open a group there. */
   absolute: boolean;
+  /** A datagram track's first block: the next one whose source hadn't started when it became ready. */
+  fromBlock: number;
 }
 
 export interface TrackCounters { sent: number; dropped: number; failed: number }
@@ -84,6 +87,8 @@ export class FecPublisher {
   readonly blocksStarted = { all: 0, late: 0, maxLateMs: 0 };
   private readonly failLog = new Map<string, FailLog>();
   private nextAlias = 1n;
+  /** The last block whose source has started. */
+  private sourceBlock = -1;
   private catalogGroup = 0n;
   private timers: NodeJS.Timeout[] = [];
   private stopped = false;
@@ -182,7 +187,7 @@ export class FecPublisher {
     // any sent while SUBSCRIBE_OK is being written are not sent to it.
     const largest = this.largest.get(name)!.value;
     const s: Sub = { requestId, alias: this.nextAlias++, ready: false, window: filterWindow(filter, largest),
-      absolute: filter?.type === "AbsoluteStart" || filter?.type === "AbsoluteRange" };
+      absolute: filter?.type === "AbsoluteStart" || filter?.type === "AbsoluteRange", fromBlock: 0 };
     list.push(s);
     try {
       await this.conn.acceptSubscribe(requestId, s.alias, { parameters: subscribeOkParams(largest) });
@@ -192,9 +197,15 @@ export class FecPublisher {
       return;
     }
     if (!list.includes(s)) { this.log(`SUBSCRIBE ${name} (${requestId}) closed before SUBSCRIBE_OK went out`); return; }
+    // A datagram track's window would open just after its Largest Object, mid-block. Unless the filter
+    // names a start Location, it opens at the next block whose source hasn't started, on `src` and on
+    // every rung alike: a subscriber gets each block's source and repair whole from its first block.
+    const datagrams = name !== CATALOG_TRACK && name !== this.o.plain;
+    if (datagrams && !s.absolute) s.fromBlock = this.sourceBlock + 1;
     s.ready = true;
     this.log(`SUBSCRIBED ${name} request ${requestId} alias ${s.alias} filter ${describeFilter(filter)} `
-      + `largest ${largest ? `${largest.group}.${largest.object}` : "none"} from ${s.window.start.group}.${s.window.start.object}`);
+      + `largest ${largest ? `${largest.group}.${largest.object}` : "none"} from ${s.window.start.group}.${s.window.start.object}`
+      + (datagrams && !s.absolute ? ` block ${s.fromBlock}` : ""));
     if (name === CATALOG_TRACK) await this.sendCatalogTo(s, this.nextCatalogGroup());
   }
 
@@ -249,13 +260,13 @@ export class FecPublisher {
     }
   }
 
-  private async send(d: Datagram): Promise<void> {
+  private async send(d: Datagram, b: number): Promise<void> {
     const n = this.counters.get(d.track)!;
     // A dropped datagram stands for loss on the wire: the track has still sent it.
     this.largest.get(d.track)!.note(d.group, d.object);
     if (this.o.drop?.(d)) { n.dropped++; return; }
     for (const s of this.subs.get(d.track)!) {
-      if (!s.ready || !admits(s.window, d.group, d.object)) continue;
+      if (!s.ready || b < s.fromBlock || !admits(s.window, d.group, d.object)) continue;
       try {
         await this.conn.sendDatagram(s.alias, BigInt(d.group), BigInt(d.object), d.payload, { requestId: s.requestId });
         n.sent++;
@@ -344,11 +355,12 @@ export class FecPublisher {
     const k = layoutBlock(objects.map((o) => o.length)).k;
     const repair = new Map<string, Datagram[]>();
     const t0 = performance.now();
+    this.sourceBlock = b;
     let j = 0;
     for (const d of blockDatagrams(b, objects, rungs, media.blocksPerGroup)) {
       if (d.track === SOURCE_TRACK) {
         if (paceSource) await until(t0 + j * paceSource * gapMs / k);
-        await this.send(d);
+        await this.send(d, b);
         j++;
       } else {
         if (!repair.has(d.track)) repair.set(d.track, []);
@@ -358,18 +370,18 @@ export class FecPublisher {
     for (const [track, list] of repair) {
       const key = paceRepair ? track : "repair";
       const prev = this.repairQueues.get(key) ?? Promise.resolve();
-      this.repairQueues.set(key, prev.then(() => this.sendRepair(list, paceRepair * gapMs))
+      this.repairQueues.set(key, prev.then(() => this.sendRepair(b, list, paceRepair * gapMs))
         .catch((e: unknown) => this.fatal(`${track} block ${b}: ${(e as Error).stack ?? e}`)));
     }
   }
 
   /** One rung's repair for one block, spread over spanMs from now (0: back to back). */
-  private async sendRepair(list: Datagram[], spanMs: number): Promise<void> {
+  private async sendRepair(b: number, list: Datagram[], spanMs: number): Promise<void> {
     const tRel = performance.now();
     for (const [n, d] of list.entries()) {
       if (this.stopped) return;
       if (spanMs) await until(tRel + n * spanMs / list.length);
-      await this.send(d);
+      await this.send(d, b);
     }
   }
 

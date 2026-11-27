@@ -2,8 +2,7 @@
 // headless in the system Chrome, for SECS seconds; prints the page's record (state, frames, gaps, FEC
 // counters) with the checks below, and exits 1 if one fails: frames decoded; with --drop-src P > 0
 // (the loss the publisher was started with) also source lost, blocks recovered, and at most --max-abandoned
-// blocks abandoned after the join (the abandoned blocks before the FEC stage's first whole or recovered
-// block are the join, reported as joinAbandoned and not counted). --demo opens demo.html instead (Playa's default catalogBootstrap, no cb) and reads
+// blocks abandoned. --demo opens demo.html instead (Playa's default catalogBootstrap, no cb) and reads
 // the player's stats and fecStats() from it. Playwright comes from the Playa checkout
 // (PLAYA=/path/to/moq-playa, after its pnpm install).
 //
@@ -13,7 +12,6 @@
 
 import { createRequire } from "node:module";
 import { parseArgs } from "node:util";
-import { joinAbandoned } from "../src/collector.ts";
 
 const { values: a } = parseArgs({
   options: {
@@ -60,12 +58,10 @@ const fec = run?.fec;
 const keep = ["blocksSeen", "blocksWhole", "blocksRecovered", "blocksAbandoned", "blocksMissing", "blocksSkipped",
   "framesReleased", "framesDropped", "sourceSymbols", "sourceLost", "repairSymbols", "decodeCount", "decodeFailures"];
 const drop = Number(a["drop-src"]), maxAbandoned = Number(a["max-abandoned"]);
-const joinBlocks = joinAbandoned(fec?.blockLog ?? []);
-const abandoned = (fec?.blocksAbandoned ?? 0) - joinBlocks.length;
 const checks = [["framesDecoded > 0", (last.framesDecoded ?? 0) > 0]];
 if (drop > 0) {
   checks.push(["fec.sourceLost > 0", (fec?.sourceLost ?? 0) > 0], ["fec.blocksRecovered > 0", (fec?.blocksRecovered ?? 0) > 0],
-    [`fec.blocksAbandoned - joinAbandoned <= ${maxAbandoned}`, fec != null && abandoned <= maxAbandoned]);
+    [`fec.blocksAbandoned <= ${maxAbandoned}`, fec != null && fec.blocksAbandoned <= maxAbandoned]);
 }
 const failed = checks.filter(([, ok]) => !ok).map(([c]) => c);
 console.log(JSON.stringify({
@@ -79,7 +75,6 @@ console.log(JSON.stringify({
   frameDraws: draws.length, maxGapMs: Math.round(Math.max(0, ...gaps)), gapsOver100ms: gaps.filter((g) => g > 100).length,
   errors: run?.errors,
   fec: fec ? Object.fromEntries(keep.map((k) => [k, fec[k]])) : null,
-  joinAbandoned: joinBlocks,
   fecNotWhole: (fec?.blockLog ?? []).filter((b) => b.outcome !== "whole" && b.outcome !== "recovered").slice(0, 10),
   firstDrawAtMs: draws[0] ?? null,
   gapsOver100msAt: draws.slice(1).map((t, i) => [Math.round(draws[i]), Math.round(t - draws[i])]).filter(([, g]) => g > 100),

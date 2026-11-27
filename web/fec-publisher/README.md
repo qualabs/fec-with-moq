@@ -50,7 +50,12 @@ How it sends:
   (the largest group and object it has sent, a datagram dropped by `--drop-src` included) fixes the
   window, SUBSCRIBE_OK carries it as LARGEST_OBJECT, and the subscriber gets only the objects inside the
   window. A NextGroupStart subscription to a rung therefore starts at the next group, which with
-  `--gop-frames` is the next GOP, not the next block. A catalog SUBSCRIBE gets a new catalog group,
+  `--gop-frames` is the next GOP, not the next block. A subscription to `src` or a rung whose filter
+  names no start Location (none, LargestObject, NextGroupStart) also starts at a block start: the
+  next block whose source hadn't started when the subscription was accepted, the same block on `src`
+  and on every rung. A player subscribed to several of them gets each block's source and repair whole
+  from its first block, never a block's repair with too little of its source; a rung accepted between
+  a block's source and its repair skips that block's repair. A catalog SUBSCRIBE gets a new catalog group,
   after the Largest Object. Objects sent while SUBSCRIBE_OK is being written are not sent to the new
   subscription. An AbsoluteRange's end stops the objects, but no PUBLISH_DONE follows it, and a
   REQUEST_UPDATE doesn't change the window.
@@ -175,9 +180,7 @@ the page's record: state, frames decoded, gaps between drawn frames, and the FEC
 (`blocksWhole`, `blocksRecovered`, `blocksAbandoned`, `sourceLost`, `repairSymbols`), with `ok` and the
 checks that `failed`; it exits 1 if one fails. Frames must be decoded; with `--drop-src P` (the loss the
 publisher was started with) the FEC stage must also have lost source, recovered blocks and abandoned at
-most `--max-abandoned` (0). The abandoned blocks before the stage's first whole or recovered block are
-the join, not losses: a player that joins mid-block can get its repair and too little of its source.
-They are listed in `joinAbandoned` and not counted. `--demo` opens `demo.html` instead, which uses Playa's default
+most `--max-abandoned` (0). `--demo` opens `demo.html` instead, which uses Playa's default
 `catalogBootstrap`. To watch it, open
 `examples/fec-with-moq/demo.html?url=…&ns=…&ver=draft-18&fec=1&rungs=3&overlay=1&certHash=$HASH`.
 

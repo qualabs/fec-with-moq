@@ -79,6 +79,17 @@ of 2026-11-26, finding 12, still open).
   subscription is accepted, from the Largest Object that SUBSCRIBE_OK reports.
 - The plain track is delivered as aiomoqt's PER_GROUP delivery: a subgroup stream per group. A new
   subscriber to `video` joins at a group start, as aiomoqt's lanes do.
+- A new subscription to `src` or a rung doesn't start mid-block. aiomoqt holds a joining lane to the
+  next group of its track (`FanoutDelivery.add` in `delivery.py`: `lane.floor = self._group + 1`), and
+  `moq.py` starts a rung first subscribed mid-run at a block (`RepairTrack.produce`, `b0`). The TS
+  publisher starts a datagram subscription without a start Location at the next block whose source
+  hasn't started, the same block on `src` and every rung. It differs from aiomoqt in two ways: the
+  unit is the block, not the group (they differ with `--gop-frames`, where a group holds several
+  blocks), and the floor is common to the tracks rather than per track, so a rung accepted between a
+  block's source and its repair skips that block's repair. The runs up to `edc24ac` (2026-11-27)
+  predate this: the publisher then opened a datagram track's window just after its Largest Object,
+  mid-block, and a player could get a block's repair and too little of its source at the join (the
+  abandoned join block of those runs). Only `video` joined as aiomoqt's lanes do.
 
 ## Differences from the Python publisher
 

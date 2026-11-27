@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { countedBlocks, joinAbandoned, type Arrival, type PlayerBlock } from "../src/collector.ts";
+import { countedBlocks, type Arrival } from "../src/collector.ts";
 
 const span = (track: string, from: number, to: number, at: number): Arrival[] =>
   Array.from({ length: to - from + 1 }, (_, i) => ({ track, block: from + i, at }));
@@ -27,19 +27,4 @@ test("a block missing on one track after the join is still counted", () => {
 
 test("a track that delivered nothing: no block is counted", () => {
   assert.deepEqual(countedBlocks(span("src", 1, 9, 20), ["src", "rep1"], 10), []);
-});
-
-const log = (...o: [number, PlayerBlock["outcome"]][]): PlayerBlock[] => o.map(([id, outcome]) => ({ id, outcome }));
-
-test("player: the abandoned block before the first whole or recovered one is the join", () => {
-  assert.deepEqual(joinAbandoned(log([20, "abandoned"], [21, "recovered"], [22, "whole"])), [20]);
-});
-
-test("player: an abandoned block after the first whole or recovered one is not the join", () => {
-  assert.deepEqual(joinAbandoned(log([20, "whole"], [21, "abandoned"], [22, "recovered"])), []);
-  assert.deepEqual(joinAbandoned(log([20, "abandoned"], [21, "whole"], [30, "abandoned"])), [20]);
-});
-
-test("player: no whole or recovered block, no join", () => {
-  assert.deepEqual(joinAbandoned(log([20, "abandoned"], [21, "abandoned"])), []);
 });

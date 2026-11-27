@@ -73,16 +73,3 @@ export function countedBlocks(arrivals: Arrival[], tracks: string[], ready: numb
   const first = Math.max(joined, 1 + (beforeReady >= 0 ? beforeReady : firstAfter));
   return Array.from({ length: Math.max(0, last - first) }, (_, i) => first + i);
 }
-
-export interface PlayerBlock { id: number; outcome: "whole" | "recovered" | "abandoned" | "missing" }
-
-/**
- * The player's join blocks: the abandoned blocks it finished before its first whole or recovered one
- * (`log` in release order). A player that joins mid-block can get that block's repair and too little of
- * its source; the abandonments after the first whole or recovered block are losses. Empty if no block
- * was whole or recovered.
- */
-export function joinAbandoned(log: PlayerBlock[]): number[] {
-  const first = log.findIndex((b) => b.outcome === "whole" || b.outcome === "recovered");
-  return first < 0 ? [] : log.slice(0, first).filter((b) => b.outcome === "abandoned").map((b) => b.id);
-}
