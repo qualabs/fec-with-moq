@@ -28,6 +28,11 @@ type Sent = { alias: bigint; group: bigint; object: bigint };
 /** Records what the publisher writes; `onDatagram` runs before each datagram is recorded. */
 class FakeConn {
   onSubscribe?: (id: bigint, ns: Uint8Array[], name: Uint8Array, p: Map<bigint, unknown>) => void;
+  onSubscribeClosed?: (id: bigint) => void;
+  /** Runs while a subgroup stream is being opened, before it is returned. */
+  onOpen: () => Promise<void> | void = () => {};
+  /** Return a promise that never settles to hang an object's write. */
+  objectWrite: () => Promise<void> | void = () => {};
   accepted = new Map<bigint, { alias: bigint; largest?: Location }>();
   datagrams: Sent[] = [];
   subgroups: Sent[] = [];
@@ -60,10 +65,12 @@ class FakeConn {
   }
   streams: { alias: bigint; group: bigint; firstObject?: boolean; objects: bigint[]; props: Uint8Array[]; end?: string }[] = [];
   async openSubgroup(alias: bigint, group: bigint, _sub: bigint, o: { firstObject?: boolean }) {
+    await this.onOpen();
     this.streams.push({ alias, group, firstObject: o.firstObject, objects: [], props: [] });
     return { alias, group, i: this.streams.length - 1 };
   }
   async sendObject(s: { alias: bigint; group: bigint; i: number }, object: bigint, _p: Uint8Array, props?: Uint8Array) {
+    await this.objectWrite();
     this.onObject({ alias: s.alias, group: s.group, object });
     this.subgroups.push({ alias: s.alias, group: s.group, object });
     this.streams[s.i].objects.push(object);
@@ -254,4 +261,41 @@ test("pacing: a block whose source starts late is logged and counted", async () 
   assert.ok(pub.blocksStarted.late >= 1);
   assert.match(lines.find((l) => l.startsWith("LATE")) ?? "", /^LATE block 1: source starts \d+ ms after its slot$/);
   assert.match(pub.summary(), new RegExp(`^blocks 4 late ${pub.blocksStarted.late} \\(max \\d+ ms after the slot\\); `));
+});
+
+test("lifecycle: a subscription closed while a datagram is written doesn't cost the next one that datagram", async () => {
+  const ids: Record<string, bigint> = {};
+  const c = await run((c) => {
+    ids.a = c.subscribe("src");
+    ids.b = c.subscribe("src");
+    c.onDatagram = (d) => { if (d.alias === c.accepted.get(ids.a)?.alias && d.object === 0n) c.onSubscribeClosed!(ids.a); };
+  });
+  assert.deepEqual(sentTo(c, ids.a), [[0, 0]]);
+  assert.deepEqual(sentTo(c, ids.b), at("src", [0, 0]));
+});
+
+test("lifecycle: a plain subscription closed while its stream opens gets no object, and the stream is reset", async () => {
+  const ids: Record<string, bigint> = {};
+  const c = await run((c) => {
+    ids.v = c.subscribe("video");
+    c.onOpen = () => { if (c.streams.length === 0) c.onSubscribeClosed!(ids.v); };
+  }, "video");
+  assert.deepEqual(c.streams.map((s) => [s.objects.length, s.end]), [[0, "reset"]]);
+});
+
+test("lifecycle: stop() doesn't wait for ever on a plain write that never completes", async () => {
+  const c = new FakeConn();
+  const lines: string[] = [];
+  const pub = new FecPublisher({ url: "", namespace: "ns", media, catalog: new Uint8Array([1]), rungs: RUNGS,
+    plain: "video", stopWaitMs: 100, log: (l) => lines.push(l) });
+  pub.attach(c as unknown as MoqtConnection);
+  c.subscribe("video");
+  c.objectWrite = () => (c.subgroups.length >= 3 ? new Promise<void>(() => {}) : undefined);
+  await pub.serve();
+  await new Promise((r) => setTimeout(r, 50));
+  const t = performance.now();
+  await pub.stop();
+  assert.ok(performance.now() - t < 1000);
+  assert.ok(lines.includes("STOP sending still pending; resetting the plain streams"));
+  assert.deepEqual(c.streams.map((s) => s.end), ["reset"]);
 });

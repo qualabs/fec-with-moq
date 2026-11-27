@@ -31,6 +31,9 @@ export const MAX_DATAGRAM_HEADER = 1 + 3 * vi64EncodingLength(MAX_VI64) + 1;
 /** Send failures are logged at the first one, then at most once per this many ms per track. */
 const FAIL_LOG_MS = 5000;
 
+/** How long stop() waits for the block loop, the repair and the plain track's queue (default). */
+export const STOP_WAIT_MS = 2000;
+
 /** A block whose source starts more than this many ms after its slot is logged as LATE (default). */
 export const LATE_MS = 50;
 
@@ -54,6 +57,8 @@ export interface PublisherOptions {
   blocks?: number;
   /** Log LATE when a block's source starts more than this many ms after its slot (default LATE_MS). */
   lateMs?: number;
+  /** stop() waits at most this long for what is being sent, then resets the plain streams (default STOP_WAIT_MS). */
+  stopWaitMs?: number;
   log?: (line: string) => void;
   /** The session ended without stop(), or the block loop threw: the publisher can't go on. */
   onFatal?: (why: string) => void;
@@ -92,6 +97,8 @@ export class FecPublisher {
   private catalogGroup = 0n;
   private timers: NodeJS.Timeout[] = [];
   private stopped = false;
+  /** stop() is done waiting: the plain track sends nothing more. */
+  private plainCut = false;
   private readonly log: (line: string) => void;
   private readonly tracks: string[];
   private readonly o: PublisherOptions;
@@ -149,8 +156,11 @@ export class FecPublisher {
     if (this.stopped) return;
     this.stopped = true;
     for (const t of this.timers) clearInterval(t);
-    await this.done.catch(() => {});
-    await this.plainQueue;
+    // Bounded: a write that never completes (a stream with no flow-control credit) mustn't hold stop().
+    const limit = new Promise<void>((r) => { const t = setTimeout(r, this.o.stopWaitMs ?? STOP_WAIT_MS); t.unref(); });
+    const settled = Promise.all([this.done.catch(() => {}), this.plainQueue.catch(() => {})]).then(() => true);
+    if (!await Promise.race([settled, limit.then(() => false)])) this.log("STOP sending still pending; resetting the plain streams");
+    this.plainCut = true;
     // A plain stream cut mid-group must not end with FIN: its header says it holds the group's end.
     await Promise.all([...this.plainStreams.values()].map((p) => this.conn.resetSubgroup(p.stream).catch(() => {})));
     this.plainStreams.clear();
@@ -265,7 +275,8 @@ export class FecPublisher {
     // A dropped datagram stands for loss on the wire: the track has still sent it.
     this.largest.get(d.track)!.note(d.group, d.object);
     if (this.o.drop?.(d)) { n.dropped++; return; }
-    for (const s of this.subs.get(d.track)!) {
+    // A copy: a subscription can close while a datagram is being written.
+    for (const s of [...this.subs.get(d.track)!]) {
       if (!s.ready || b < s.fromBlock || !admits(s.window, d.group, d.object)) continue;
       try {
         await this.conn.sendDatagram(s.alias, BigInt(d.group), BigInt(d.object), d.payload, { requestId: s.requestId });
@@ -314,8 +325,9 @@ export class FecPublisher {
     const name = this.o.plain!;
     const n = this.counters.get(name)!;
     for (const o of objs) {
+      if (this.plainCut) return;
       this.largest.get(name)!.note(o.group, o.object);
-      for (const s of this.subs.get(name)!) {
+      for (const s of [...this.subs.get(name)!]) {
         if (!s.ready || !admits(s.window, o.group, o.object)) continue;
         let p = this.plainStreams.get(s);
         try {
@@ -326,6 +338,11 @@ export class FecPublisher {
               requestId: s.requestId, endOfGroup: true, hasExtensions: true, defaultPriority: true,
               subgroupIdMode: SubgroupIdMode.ZERO, firstObject: o.groupStart,
             });
+            // Closed, or stop() gave up waiting, while the stream was being opened.
+            if (this.plainCut || !this.subs.get(name)!.includes(s)) {
+              void this.conn.resetSubgroup(stream).catch(() => {});
+              continue;
+            }
             p = { group: o.group, stream };
             this.plainStreams.set(s, p);
           }

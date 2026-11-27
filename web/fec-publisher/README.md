@@ -70,7 +70,10 @@ How it sends:
 - **Session lifecycle.** A subscription is registered before its SUBSCRIBE_OK is written, and gets
   datagrams once it is accepted. Send failures are logged at the first one and then at most every 5 s
   per track. If the session closes before `stop()`, the publisher logs `SESSION-DEAD` and exits with
-  status 4. `stop()` sends PUBLISH_DONE (TRACK_ENDED) to each subscription.
+  status 4. `stop()` waits up to 2 s for the block being sent, its repair and the plain track's
+  queue, then resets the plain track's open streams and sends PUBLISH_DONE (TRACK_ENDED) to each
+  subscription. A subscription closed while a datagram is written or a stream is opened doesn't
+  affect the others; a stream opened for one that closed meanwhile is reset.
 - **Catalog by Joining FETCH.** Playa's default `catalogBootstrap` (`auto`, SUBSCRIBE plus a Joining
   FETCH) works through moqx without serving FETCH: in the runs of 2026-11-26 the FETCH never reached the
   publisher. moqx answered it itself, with REQUEST_ERROR "No objects published for track" when it held
