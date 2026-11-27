@@ -2,71 +2,67 @@
 
 A TypeScript publisher for the three-track catalog's FEC tracks, in Node, over Playa's MoQT
 (`@openmoq/webtransport` 0.7.0 from npm, draft 18 over WebTransport with the FAILS client). It
-publishes what `relay_fec.py pub --media CLIP --source-mapping datagram` publishes, for a FEC player
-and for a player without FEC:
+publishes a clip for a FEC player and for a player without FEC:
 
 | Track | What | How |
 |---|---|---|
 | `catalog` | `catalogJson` of `web/fec-decoder` (MSF draft-02: `video`, `src`, `rep1..N`) | a subgroup stream per group, a new group every 2 s and at each SUBSCRIBE |
-| `video` | the clip's frames as LOC objects, for a player without FEC (`plainObjects`, as `media.py`'s `PlainTrack`) | a subgroup stream per group (GOP) |
+| `video` | the clip's frames as LOC objects, for a player without FEC (`plainObjects`) | a subgroup stream per group (GOP) |
 | `src` | one plain repair-format object per source symbol (`sourceObjects`) | OBJECT_DATAGRAM |
 | `rep1..N` | each rung's slice of the global repair symbols (`encode`, `repairObjects`) | OBJECT_DATAGRAM, after the block's source |
 
 The source objects are the clip's frames as `props_len:u16 | LOC properties | payload`, the LOC
-timestamp in the draft-18 encoding, a block of `--objects` frames every `--gap` seconds, as
-`media.py`'s `MediaBlockSchedule`. The `video` track carries the same frames and timestamps, one frame
-per object: the timestamp as the object's LOC property, the frame as its payload, group = the source's
-group, object q * n + i for frame i of the group's q-th block (0 .. GOP - 1). From the LOC objects on,
-the bytes match the Python publisher's: `test/producer.test.ts` against `media-vectors.json` (`src`,
-`rep1..3`), `test/plain.test.ts` against `plain-vectors.json` and `plain-vectors-gop24.json` (`video`'s
-addresses, properties and payloads, from `PlainTrack.produce()` through `scripts/fec_plain_vectors.py`).
+timestamp in the draft-18 encoding, a block of `--objects` frames every `--gap` seconds, frame i of
+block b stamped t0 + b × gap + i × gap / n. The `video` track carries the same frames and timestamps,
+one frame per object: the timestamp as the object's LOC property, the frame as its payload, group = the
+source's group, object q * n + i for frame i of the group's q-th block (0 .. GOP - 1). From the LOC
+objects on, the bytes are checked against reference vectors: `test/producer.test.ts` against
+`web/fec-decoder`'s `media-vectors.json` (`src`, `rep1..3`), `test/plain.test.ts` against
+`plain-vectors.json` and `plain-vectors-gop24.json` (`video`'s addresses, properties and payloads).
 
 How it sends:
 
 - **Source before repair, and before encoding.** A block's `src` datagrams are all sent before its
   repair is encoded (`blockDatagrams` is a generator), then each rung's repair follows.
-- **Pacing, on by default.** `--pace-source F` spreads a block's source over F of the block period
-  and `--pace-repair F` each rung's repair over F of it after the source, as `relay_fec.py`'s options
-  of the same name. The defaults are 0.5 and 0.4; `relay_fec.py`'s are 0 (back to back), which stays
-  selectable with `--pace-source 0 --pace-repair 0`. The defaults differ because back to back loses
-  datagrams at a realistic bitrate: the datagrams queue in the publisher's QUIC stack and expire there
-  or are dropped unsent, with no error to the publisher. On a 1080p60 AV1 clip at 4.5 Mbps, at 0 % loss
-  through a local moqx, about 40 % of the datagrams didn't arrive without pacing. With 0.5 / 0.4 all of
-  them arrived in two runs out of four; the other two each lost a burst in one episode on a loaded
-  machine (23 and 691 datagrams, up to 7 %). Pacing is not a guarantee. The STATS and DONE log lines
-  carry the session's QUIC counters (`quic datagrams expired N lost N`), which show such losses on the
-  publisher's side.
+- **Pacing, on by default.** `--pace-source F` spreads a block's source over F of the block period and
+  `--pace-repair F` each rung's repair over F of it after the source. The defaults are 0.5 and 0.4;
+  `--pace-source 0 --pace-repair 0` sends back to back. Pacing is on by default because back to back
+  loses datagrams at a realistic bitrate: the datagrams queue in the publisher's QUIC stack and expire
+  there or are dropped unsent, with no error to the publisher. On a 1080p60 AV1 clip at 4.5 Mbps, at 0 %
+  loss through a local moqx, about 40 % of the datagrams didn't arrive without pacing. With 0.5 / 0.4
+  all of them arrived in two runs out of four; the other two each lost a burst in one episode on a
+  loaded machine (23 and 691 datagrams, up to 7 %). Pacing is not a guarantee. The STATS and DONE log
+  lines carry the session's QUIC counters (`quic datagrams expired N lost N`), which show such losses on
+  the publisher's side.
 - **Checks before sending.** Every block of the clip is checked at startup (an object over 65535 B, a
-  payload over the 1152 B datagram ceiling, k + m over 256), and so is the largest datagram against
-  the session's `maxDatagramSize`; the publisher refuses to start (exit 2, or 1 after connecting) with
-  a message instead of failing mid-run.
-- **Subscription filters.** A SUBSCRIBE's filter (draft 18 §5.1.2: none, NextGroupStart,
-  LargestObject, AbsoluteStart, AbsoluteRange) is applied as aiomoqt does: when the subscription is
-  accepted, the track's Largest Object (the largest group and object it has sent, a datagram dropped
-  by `--drop-src` included) fixes the window, SUBSCRIBE_OK carries it as LARGEST_OBJECT, and the
-  subscriber gets only the objects inside the window. A NextGroupStart subscription to a rung therefore
-  starts at the next group, which with `--gop-frames` is the next GOP, not the next block. A catalog
-  SUBSCRIBE gets a new catalog group, after the Largest Object. Objects sent while SUBSCRIBE_OK is
-  being written are not sent to the new subscription. An AbsoluteRange's end stops the objects, but no
-  PUBLISH_DONE follows it, and a REQUEST_UPDATE doesn't change the window.
+  payload over the 1152 B datagram ceiling, k + m over 256), and so is the largest datagram against the
+  session's `maxDatagramSize`; the publisher refuses to start (exit 2, or 1 after connecting) with a
+  message instead of failing mid-run.
+- **Subscription filters.** A SUBSCRIBE's filter (draft 18 §5.1.2: none, NextGroupStart, LargestObject,
+  AbsoluteStart, AbsoluteRange) is applied when the subscription is accepted: the track's Largest Object
+  (the largest group and object it has sent, a datagram dropped by `--drop-src` included) fixes the
+  window, SUBSCRIBE_OK carries it as LARGEST_OBJECT, and the subscriber gets only the objects inside the
+  window. A NextGroupStart subscription to a rung therefore starts at the next group, which with
+  `--gop-frames` is the next GOP, not the next block. A catalog SUBSCRIBE gets a new catalog group,
+  after the Largest Object. Objects sent while SUBSCRIBE_OK is being written are not sent to the new
+  subscription. An AbsoluteRange's end stops the objects, but no PUBLISH_DONE follows it, and a
+  REQUEST_UPDATE doesn't change the window.
 - **The plain track's streams.** Block b's `video` objects go out at the block's slot, on a queue of
   their own so a slow stream doesn't hold up the datagrams. Each subscriber gets a subgroup stream per
   group, opened at the group's first object with FIRST_OBJECT and ended with FIN after its last, the
-  header's END_OF_GROUP bit set; Python's aiomoqt instead ends a group's stream with an END_OF_GROUP
-  status object when the next group starts. A new subscriber to `video` starts at the next group
-  start, also under LargestObject, whose window would otherwise open mid-group: a decision (Ismael,
-  2026-11-27), so that a player without FEC starts at a key frame. It matches aiomoqt's lanes, and moqx
-  subscribes with LargestObject, so through moqx a player starts at the next GOP. Only a filter that
-  names a start Location (AbsoluteStart, AbsoluteRange) can open a stream mid-group. A stream cut by
-  `stop()` mid-group is reset, not ended with FIN.
+  header's END_OF_GROUP bit set. A new subscriber to `video` starts at the next group start, also under
+  LargestObject, whose window would otherwise open mid-group: a decision (Ismael, 2026-11-27), so that a
+  player without FEC starts at a key frame. moqx subscribes with LargestObject, so through moqx a player
+  starts at the next GOP. Only a filter that names a start Location (AbsoluteStart, AbsoluteRange) can
+  open a stream mid-group. A stream cut by `stop()` mid-group is reset, not ended with FIN.
 - **Session lifecycle.** A subscription is registered before its SUBSCRIBE_OK is written, and gets
   datagrams once it is accepted. Send failures are logged at the first one and then at most every 5 s
   per track. If the session closes before `stop()`, the publisher logs `SESSION-DEAD` and exits with
-  status 4, like `relay_fec.py`. `stop()` sends PUBLISH_DONE (TRACK_ENDED) to each subscription.
+  status 4. `stop()` sends PUBLISH_DONE (TRACK_ENDED) to each subscription.
 - **Catalog by Joining FETCH.** Playa's default `catalogBootstrap` (`auto`, SUBSCRIBE plus a Joining
-  FETCH) works through moqx without serving FETCH: in the runs of 2026-11-26 the FETCH never reached
-  the publisher. moqx answered it itself, with REQUEST_ERROR "No objects published for track" when it
-  held no catalog group yet, and Playa took the catalog from the subscription.
+  FETCH) works through moqx without serving FETCH: in the runs of 2026-11-26 the FETCH never reached the
+  publisher. moqx answered it itself, with REQUEST_ERROR "No objects published for track" when it held
+  no catalog group yet, and Playa took the catalog from the subscription.
 
 **Not here (yet):**
 
@@ -79,8 +75,6 @@ How it sends:
 - still open from the expert review of 2026-11-26 (findings by number):
   - 6: `--drop-src` is i.i.d. loss on the source before the wire. It is a functional test, not a
     measure of what FEC gains; a number needs netem or a burst model, stated with the result;
-  - 12: the bytes match Python's from the LOC objects onward only. The two publishers never read the
-    same clip;
   - 13: no ADR yet scopes this TS publisher against the umbrella ADR 0001;
   - 14: the publisher runs npm `@openmoq/webtransport` 0.7.0 and the player the fork at `60d877a`.
     Both are draft 18, and the run evidence records both.
@@ -99,7 +93,6 @@ How it sends:
 | `src/cli.ts`, `src/options.ts` | the publisher's command line and its options and defaults |
 | `scripts/subscribe-check.ts` | a Node subscriber through the relay: counts objects per track, compares each block's datagrams with what was sent, rebuilds each block and compares its frames with the clip |
 | `scripts/player-check.mjs` | the Playa FEC test page (moq-playa `fec-with-moq-v2`), headless in the system Chrome |
-| `../../scripts/fec_plain_vectors.py` | `test/plain-vectors*.json` from `media.py`'s `PlainTrack` |
 
 ## Tests
 
