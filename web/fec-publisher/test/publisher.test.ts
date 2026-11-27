@@ -32,6 +32,10 @@ class FakeConn {
   datagrams: Sent[] = [];
   subgroups: Sent[] = [];
   onDatagram: (d: Sent) => void = () => {};
+  /** How long a datagram's write takes, in ms (a slow send path). */
+  delay: (d: Sent) => number = () => 0;
+  /** When each datagram's write began, in the order of `datagrams`. */
+  times: number[] = [];
   onObject: (d: Sent) => void = () => {};
   private nextId = 0n;
 
@@ -47,8 +51,12 @@ class FakeConn {
   async rejectSubscribe() {}
   async sendDatagram(alias: bigint, group: bigint, object: bigint) {
     const d = { alias, group, object };
+    const at = performance.now();
+    const ms = this.delay(d);
+    if (ms) await new Promise((r) => setTimeout(r, ms));
     this.onDatagram(d);
     this.datagrams.push(d);
+    this.times.push(at);
   }
   streams: { alias: bigint; group: bigint; firstObject?: boolean; objects: bigint[]; props: Uint8Array[]; end?: string }[] = [];
   async openSubgroup(alias: bigint, group: bigint, _sub: bigint, o: { firstObject?: boolean }) {
@@ -68,7 +76,8 @@ class FakeConn {
 
 // 6 blocks of 12 frames, 2 blocks per group (a GOP of 24): groups 0, 1 and 2.
 const samples = Array.from({ length: 48 }, (_, i) => ({ payload: new Uint8Array(900).fill(i), key: i % 24 === 0 }));
-const media = new MediaBlocks({ codec: "av01.0.04M.08", width: 2, height: 2, fps: 60, samples }, 12, 0.005, 24);
+// 50 ms a block: unpaced, a block's repair is out before the next block's slot.
+const media = new MediaBlocks({ codec: "av01.0.04M.08", width: 2, height: 2, fps: 60, samples }, 12, 0.05, 24);
 const RUNGS = [0.15, 0.15, 0.15];
 const ALL = Array.from({ length: 6 }, (_, b) => [...blockDatagrams(b, media.objects(b, 0), RUNGS, 2)]).flat();
 const at = (track: string, from: [number, number]) => ALL.filter((d) => d.track === track
@@ -164,4 +173,64 @@ test("plain track: a stream per group, FIRST_OBJECT and FIN, joined at a group s
   assert.deepEqual(streams(ids.abs), [[1, false, all.slice(5), "fin"], [2, true, all, "fin"]]);
   // every object carries its LOC properties (their bytes: test/plain.test.ts)
   for (const st of c.streams) assert.equal(st.props.length, st.objects.length);
+});
+
+// Pacing: 4 blocks of 12 frames at 100 ms a block, a group per block.
+const slowSamples = samples.map((s, i) => ({ ...s, key: i % 12 === 0 }));
+const slow = new MediaBlocks({ codec: "av01.0.04M.08", width: 2, height: 2, fps: 60, samples: slowSamples }, 12, 0.1, 12);
+
+async function paced(o: { paceSource: number; paceRepair: number; lateMs?: number }, setup: (c: FakeConn) => void) {
+  const c = new FakeConn();
+  const lines: string[] = [];
+  const pub = new FecPublisher({ url: "", namespace: "ns", media: slow, catalog: new Uint8Array([1]), rungs: RUNGS,
+    blocks: 4, log: (l) => lines.push(l), ...o });
+  pub.attach(c as unknown as MoqtConnection);
+  const ids = ["src", "rep1", "rep2", "rep3"].map((t) => c.subscribe(t));
+  await new Promise((r) => setTimeout(r, 0));
+  setup(c);
+  const t0 = performance.now();
+  await pub.serve();
+  await pub.done;
+  await pub.stop();
+  const track = new Map(ids.map((id, i) => [c.accepted.get(id)!.alias, ["src", "rep1", "rep2", "rep3"][i]]));
+  const sent = c.datagrams.map((d, i) => ({ track: track.get(d.alias)!, block: Number(d.group), at: c.times[i] - t0 }));
+  return { pub, sent, lines };
+}
+
+test("pacing: a block's slow repair doesn't delay the next block's source", async () => {
+  // every repair datagram takes 40 ms to write: a block's 3 x 2 repair datagrams, one after the
+  // other, would take 240 ms, more than the 100 ms block period
+  const { pub, sent, lines } = await paced({ paceSource: 0.5, paceRepair: 0.4 },
+    (c) => { c.delay = (d) => (d.alias === c.accepted.get(0n)!.alias ? 0 : 40); });
+  for (let b = 0; b < 4; b++) {
+    const first = sent.find((d) => d.track === "src" && d.block === b)!;
+    assert.ok(first.at - b * 100 < 45, `block ${b}'s source started ${first.at - b * 100} ms after its slot`);
+  }
+  assert.equal(pub.blocksStarted.late, 0);
+  assert.equal(lines.filter((l) => l.startsWith("LATE")).length, 0);
+  assert.match(pub.summary(), /^blocks 4 late 0 /);
+});
+
+test("pacing: within a block the source goes first, and each rung sends its blocks in order", async () => {
+  const { sent } = await paced({ paceSource: 0.5, paceRepair: 0.4 },
+    (c) => { c.delay = (d) => (d.alias === c.accepted.get(0n)!.alias ? 0 : 40); });
+  for (let b = 0; b < 4; b++) {
+    const lastSrc = sent.map((d) => d.track === "src" && d.block === b).lastIndexOf(true);
+    const firstRep = sent.findIndex((d) => d.track !== "src" && d.block === b);
+    assert.ok(lastSrc >= 0 && firstRep > lastSrc, `block ${b}: repair before the end of its source`);
+  }
+  for (const t of ["rep1", "rep2", "rep3"]) {
+    const blocks = sent.filter((d) => d.track === t).map((d) => d.block);
+    assert.deepEqual(blocks, [...blocks].sort((x, y) => x - y));
+    assert.deepEqual([...new Set(blocks)], [0, 1, 2, 3]);
+  }
+});
+
+test("pacing: a block whose source starts late is logged and counted", async () => {
+  // block 0's source datagrams take 15 ms each to write: its source runs past block 1's slot
+  const { pub, lines } = await paced({ paceSource: 0.5, paceRepair: 0.4 },
+    (c) => { c.delay = (d) => (d.alias === c.accepted.get(0n)!.alias && d.group === 0n ? 15 : 0); });
+  assert.ok(pub.blocksStarted.late >= 1);
+  assert.match(lines.find((l) => l.startsWith("LATE")) ?? "", /^LATE block 1: source starts \d+ ms after its slot$/);
+  assert.match(pub.summary(), new RegExp(`^blocks 4 late ${pub.blocksStarted.late} \\(max \\d+ ms after the slot\\); `));
 });

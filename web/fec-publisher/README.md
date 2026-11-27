@@ -23,10 +23,17 @@ objects on, the bytes are checked against reference vectors: `test/producer.test
 How it sends:
 
 - **Source before repair, and before encoding.** A block's `src` datagrams are all sent before its
-  repair is encoded (`blockDatagrams` is a generator), then each rung's repair follows.
+  repair is encoded (`blockDatagrams` is a generator), then each rung's repair follows as a task of
+  its own: the next block's source starts at its slot whatever a rung still has to send of the block
+  before. A rung sends its blocks in order; unpaced, the rungs share one queue, in rung order.
 - **Pacing, on by default.** `--pace-source F` spreads a block's source over F of the block period and
-  `--pace-repair F` each rung's repair over F of it after the source. The defaults are 0.5 and 0.4;
-  `--pace-source 0 --pace-repair 0` sends back to back. Pacing is on by default because back to back
+  `--pace-repair F` each rung's repair over F of it, from when the rung starts the block (after its
+  source). The defaults are 0.5 and 0.4; `--pace-source 0 --pace-repair 0` sends back to back. The two
+  must add up to less than 1, so that a block's source and repair fit in one block period; the
+  publisher refuses to start otherwise (exit 2). A block whose source starts more than 50 ms after its
+  slot is logged as `LATE block B: source starts N ms after its slot`, and the STATS and DONE lines
+  count them (`blocks N late N (max N ms after the slot)`): the LOC timestamps follow the slot, so a
+  publisher that falls behind adds that much latency at the player. Pacing is on by default because back to back
   loses datagrams at a realistic bitrate: the datagrams queue in the publisher's QUIC stack and expire
   there or are dropped unsent, with no error to the publisher. On a 1080p60 AV1 clip at 4.5 Mbps, at 0 %
   loss through a local moqx, about 40 % of the datagrams didn't arrive without pacing. With 0.5 / 0.4

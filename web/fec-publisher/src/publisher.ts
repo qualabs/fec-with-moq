@@ -1,6 +1,7 @@
 // The FEC publisher's MoQ side: announces the namespace, answers SUBSCRIBE for `catalog`, `src` and
 // the repair rungs, sends the catalog as a new group every interval on its own subgroup stream, and
-// each block's datagrams at the block rate, the source before the repair is encoded. Each
+// each block's datagrams at the block rate, the source before the repair is encoded and each rung's
+// repair as a task of its own, so the next block's source keeps its slot. Each
 // subscription gets what its filter asks for, from the Largest Object its SUBSCRIBE_OK reports. The
 // plain track (`video`, for players without FEC) carries the same frames as LOC objects, a subgroup
 // stream per group (GOP). FETCH is refused (NOT_SUPPORTED).
@@ -29,6 +30,9 @@ export const MAX_DATAGRAM_HEADER = 1 + 3 * vi64EncodingLength(MAX_VI64) + 1;
 /** Send failures are logged at the first one, then at most once per this many ms per track. */
 const FAIL_LOG_MS = 5000;
 
+/** A block whose source starts more than this many ms after its slot is logged as LATE (default). */
+export const LATE_MS = 50;
+
 export interface PublisherOptions {
   url: string;
   certHash?: string;
@@ -47,6 +51,8 @@ export interface PublisherOptions {
   paceRepair?: number;
   /** Stop after this many blocks (default: run until stop()). */
   blocks?: number;
+  /** Log LATE when a block's source starts more than this many ms after its slot (default LATE_MS). */
+  lateMs?: number;
   log?: (line: string) => void;
   /** The session ended without stop(), or the block loop threw: the publisher can't go on. */
   onFatal?: (why: string) => void;
@@ -72,6 +78,10 @@ export class FecPublisher {
   /** Each plain subscription's open subgroup stream. */
   private readonly plainStreams = new Map<Sub, { group: number; stream: bigint }>();
   private plainQueue: Promise<void> = Promise.resolve();
+  /** Each rung's repair, one block after the other (paced); one queue for all rungs when unpaced. */
+  private readonly repairQueues = new Map<string, Promise<void>>();
+  /** Blocks started, those whose source started late, and the latest start after a slot (ms). */
+  readonly blocksStarted = { all: 0, late: 0, maxLateMs: 0 };
   private readonly failLog = new Map<string, FailLog>();
   private nextAlias = 1n;
   private catalogGroup = 0n;
@@ -260,10 +270,18 @@ export class FecPublisher {
     const gapMs = media.gapS * 1000;
     const tStart = performance.now();
     const t0Us = Math.trunc(Date.now() * 1000);
+    const lateMs = this.o.lateMs ?? LATE_MS;
     for (let b = 0; !this.stopped && (this.o.blocks === undefined || b < this.o.blocks); b++) {
-      const wait = tStart + b * gapMs - performance.now();
-      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      const slot = tStart + b * gapMs;
+      await until(slot);
       if (this.stopped) break;
+      const late = performance.now() - slot;
+      this.blocksStarted.all++;
+      this.blocksStarted.maxLateMs = Math.max(this.blocksStarted.maxLateMs, Math.round(late));
+      if (late > lateMs) {
+        this.blocksStarted.late++;
+        this.log(`LATE block ${b}: source starts ${Math.round(late)} ms after its slot`);
+      }
       // The plain track's objects go out at the block's slot too, on their own queue: a slow
       // stream doesn't hold up the datagrams.
       if (this.o.plain) {
@@ -272,6 +290,7 @@ export class FecPublisher {
       }
       await this.sendBlock(b, media.objects(b, t0Us), rungs, gapMs);
     }
+    await Promise.all(this.repairQueues.values());
   }
 
   /**
@@ -314,15 +333,16 @@ export class FecPublisher {
   }
 
   /**
-   * Block b's source, then its repair (--pace-source and --pace-repair, the source one interval per
-   * block): each paced datagram waits for its slot. Paced rungs interleave by slot; unpaced, they go
-   * back to back in rung order.
+   * Block b's source (--pace-source: spread over that fraction of the block period), then its repair
+   * is encoded and handed to each rung's queue. Paced (--pace-repair), each rung's repair for the block
+   * is spread over that fraction of the block period from when the rung starts it, behind the rung's
+   * earlier blocks, so the rungs interleave by slot and a slow rung delays only itself, not the next
+   * block's source. Unpaced, the rungs go back to back in rung order on one queue.
    */
   private async sendBlock(b: number, objects: Uint8Array[], rungs: number[], gapMs: number): Promise<void> {
     const { paceSource = 0, paceRepair = 0, media } = this.o;
     const k = layoutBlock(objects.map((o) => o.length)).k;
-    const repair: { d: Datagram; at: number }[] = [];
-    const pos = new Map<string, number>();
+    const repair = new Map<string, Datagram[]>();
     const t0 = performance.now();
     let j = 0;
     for (const d of blockDatagrams(b, objects, rungs, media.blocksPerGroup)) {
@@ -331,25 +351,31 @@ export class FecPublisher {
         await this.send(d);
         j++;
       } else {
-        const n = pos.get(d.track) ?? 0;
-        pos.set(d.track, n + 1);
-        repair.push({ d, at: n });
+        if (!repair.has(d.track)) repair.set(d.track, []);
+        repair.get(d.track)!.push(d);
       }
     }
-    if (!repair.length) return;
-    const tRel = performance.now();
-    if (paceRepair) {
-      for (const r of repair) r.at = tRel + r.at * paceRepair * gapMs / pos.get(r.d.track)!;
-      repair.sort((x, y) => x.at - y.at);
+    for (const [track, list] of repair) {
+      const key = paceRepair ? track : "repair";
+      const prev = this.repairQueues.get(key) ?? Promise.resolve();
+      this.repairQueues.set(key, prev.then(() => this.sendRepair(list, paceRepair * gapMs))
+        .catch((e: unknown) => this.fatal(`${track} block ${b}: ${(e as Error).stack ?? e}`)));
     }
-    for (const r of repair) {
-      if (paceRepair) await until(r.at);
-      await this.send(r.d);
+  }
+
+  /** One rung's repair for one block, spread over spanMs from now (0: back to back). */
+  private async sendRepair(list: Datagram[], spanMs: number): Promise<void> {
+    const tRel = performance.now();
+    for (const [n, d] of list.entries()) {
+      if (this.stopped) return;
+      if (spanMs) await until(tRel + n * spanMs / list.length);
+      await this.send(d);
     }
   }
 
   summary(): string {
-    return this.tracks.map((t) => {
+    const { all, late, maxLateMs } = this.blocksStarted;
+    return `blocks ${all} late ${late} (max ${maxLateMs} ms after the slot); ` + this.tracks.map((t) => {
       const c = this.counters.get(t)!;
       return `${t} sent ${c.sent} dropped ${c.dropped} failed ${c.failed} subs ${this.subs.get(t)!.length}`;
     }).join("; ");

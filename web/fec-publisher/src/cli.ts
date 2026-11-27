@@ -11,7 +11,7 @@ import { MediaBlocks } from "./media.ts";
 import { readVideoTrack } from "./mp4.ts";
 import { blockLimitErrors, sourceDropper, SOURCE_TRACK } from "./producer.ts";
 import { FecPublisher } from "./publisher.ts";
-import { PUBLISHER_OPTIONS } from "./options.ts";
+import { pacingError, PUBLISHER_OPTIONS } from "./options.ts";
 
 const { values: a } = parseArgs({ options: PUBLISHER_OPTIONS });
 if (!a.url || !a.ns || !a.media) {
@@ -23,6 +23,9 @@ if (!a.url || !a.ns || !a.media) {
 const n = Number(a.objects), gapS = Number(a.gap);
 const rungs = a.rungs ? a.rungs.split(",").map(Number) : [];
 const refuse = (why: string): never => { console.error(`REFUSED ${a.media}: ${why}`); process.exit(2); };
+const paceSource = Number(a["pace-source"]), paceRepair = Number(a["pace-repair"]);
+const paceWhy = pacingError(paceSource, paceRepair);
+if (paceWhy) refuse(paceWhy);
 const track = readVideoTrack(new Uint8Array(readFileSync(a.media)));
 let media!: MediaBlocks;
 try { media = new MediaBlocks(track, n, gapS, a["gop-frames"] ? Number(a["gop-frames"]) : n); }
@@ -42,7 +45,7 @@ const pub = new FecPublisher({
   url: a.url, certHash: a.hash, namespace: a.ns, media, catalog, rungs, plain: a["plain-track"] || undefined,
   catalogIntervalS: Number(a["catalog-interval"]),
   drop: sourceDropper(Number(a["drop-src"]), Number(a.seed)),
-  paceSource: Number(a["pace-source"]), paceRepair: Number(a["pace-repair"]),
+  paceSource, paceRepair,
   log: say,
   // SESSION-DEAD: a publisher whose session is gone exits with status 4.
   onFatal: () => void stop(4),

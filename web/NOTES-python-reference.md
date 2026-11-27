@@ -70,7 +70,10 @@ of 2026-11-26, finding 12, still open).
 ## Same behaviour as `relay_fec.py` and aiomoqt
 
 - `--pace-source` and `--pace-repair` mean what `relay_fec.py`'s options of the same name mean (the
-  source one interval per block). Paced rungs interleave by slot, as Python's one task per rung does.
+  source one interval per block). Each rung's repair is a task of its own that sends its blocks in
+  order, each after the block's source is out, as `moq.py`'s `RepairTrack.produce` (one task per rung,
+  `wait_source_out`, the pacing from `t_rel`); the next block's source keeps its slot. The TS publisher
+  also refuses `--pace-source + --pace-repair >= 1` and logs LATE blocks, which `relay_fec.py` doesn't.
 - A publisher whose session is gone logs `SESSION-DEAD` and exits with status 4, as `relay_fec.py`.
 - A SUBSCRIBE's filter is applied as aiomoqt's `_filter_window` does: the window is fixed when the
   subscription is accepted, from the Largest Object that SUBSCRIBE_OK reports.
