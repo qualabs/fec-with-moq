@@ -42,7 +42,15 @@ How it sends:
   all of them arrived in two runs out of four; the other two each lost a burst in one episode on a
   loaded machine (23 and 691 datagrams, up to 7 %). Pacing is not a guarantee. The STATS and DONE log
   lines carry the session's QUIC counters (`quic datagrams expired N lost N`), which show such losses on
-  the publisher's side.
+  the publisher's side. Two more paced 1080p runs, with the player and a Node subscriber (2026-11-27,
+  1-minute load 2.3 at the start, 4.7 and 11.1 at the end), expired 38 and 198 datagrams, and the
+  second lost 9 more. Both publishers also drifted, about 2 s and 3 s behind the slot clock after 37 s,
+  because each block's paced repair held up the next block's source. With the repair on per-rung
+  tasks, a 1080p run at a load of 2.2 to 9.7 started every block within 126 ms of its slot (3 LATE)
+  and expired 47 datagrams (2026-11-28). In another run the load rose from 2.5 to 19.9; the publisher
+  didn't get the CPU for a block's source and encoding within the period, fell up to 20 s behind
+  (LATE on every block from 15 s on) and expired 3515. The lag is bounded only while the machine has
+  the CPU for it.
 - **Checks before sending.** Every block of the clip is checked at startup (an object over 65535 B, a
   payload over the 1152 B datagram ceiling, k + m over 256), and so is the largest datagram against the
   session's `maxDatagramSize`; the publisher refuses to start (exit 2, or 1 after connecting) with a
