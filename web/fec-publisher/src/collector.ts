@@ -51,3 +51,25 @@ export class BlockCollector {
     return { ...base, status: p.source.size >= lay.k ? "intact" : "recovered", objects: fromSymbols(lay, r.value) };
   }
 }
+
+export interface Arrival { track: string; block: number; at: number }
+
+/**
+ * The blocks a late subscriber can judge: from the first block where every one of `tracks` has
+ * delivered a datagram (a relay may start one track's subscription groups after another's), and
+ * after every block that had a datagram before `ready` (the last SUBSCRIBE_OK, so possibly partial),
+ * up to but not including the last block seen (cut by the stop). Empty if a track delivered nothing.
+ */
+export function countedBlocks(arrivals: Arrival[], tracks: string[], ready: number): number[] {
+  const firstOf = new Map<string, number>();
+  let beforeReady = -1, firstAfter = Infinity, last = -1;
+  for (const { track, block, at } of arrivals) {
+    firstOf.set(track, Math.min(firstOf.get(track) ?? Infinity, block));
+    if (at < ready) beforeReady = Math.max(beforeReady, block); else firstAfter = Math.min(firstAfter, block);
+    last = Math.max(last, block);
+  }
+  if (tracks.some((t) => !firstOf.has(t))) return [];
+  const joined = Math.max(...tracks.map((t) => firstOf.get(t)!));
+  const first = Math.max(joined, 1 + (beforeReady >= 0 ? beforeReady : firstAfter));
+  return Array.from({ length: Math.max(0, last - first) }, (_, i) => first + i);
+}

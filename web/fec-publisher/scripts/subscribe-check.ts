@@ -1,10 +1,11 @@
 // A Node subscriber through the relay: SUBSCRIBE to catalog, src and the rungs the catalog lists,
 // count objects per track, rebuild each block with web/fec-decoder and compare its frames with the
 // clip's, and compare what arrived of each block with what the publisher sends (k source and each
-// taken rung's slice, from the catalog and the clip). Only blocks after the last rung's SUBSCRIBE_OK
-// and before the last one seen are counted; a block in that range with no datagram at all is lost.
-// Prints one JSON summary; exits 1 if no src datagram arrived, a frame differs, or a check asked for
-// with --expect-all / --expect-recovered fails.
+// taken rung's slice, from the catalog and the clip). Only blocks from the first one where src and
+// every taken rung have delivered a datagram, after the last rung's SUBSCRIBE_OK and before the last
+// one seen are counted (countedBlocks); a block in that range with no datagram at all is lost.
+// Prints one JSON summary; exits 1 if src or a taken rung delivered no datagram, a frame differs, or
+// a check asked for with --expect-all / --expect-recovered fails.
 //
 //   node scripts/subscribe-check.ts --url URL --hash HEX --ns NS --media CLIP.mp4 [--take 3] [--secs 15]
 //     [--expect-all] [--expect-recovered MIN] [--blocks-out FILE]
@@ -17,7 +18,7 @@ import { parseArgs } from "node:util";
 import { layoutBlock } from "fec-decoder/src/layout.ts";
 import { address, rungSlices } from "fec-decoder/src/schedule.ts";
 import { connect } from "../src/connect.ts";
-import { BlockCollector } from "../src/collector.ts";
+import { BlockCollector, countedBlocks, type Arrival } from "../src/collector.ts";
 import { MediaBlocks, unpackLocObject } from "../src/media.ts";
 import { readVideoTrack } from "../src/mp4.ts";
 import { SOURCE_TRACK } from "../src/producer.ts";
@@ -83,24 +84,19 @@ await close();
 const bpg = fec.blocksPerGroup;
 const blockOf = (group: number, object: number) => bpg === 1 ? group : group * bpg + Math.floor(object / 256);
 const collector = new BlockCollector(bpg);
-let beforeReady = -1, firstAfter = Infinity, last = -1;
+const arrivals: Arrival[] = [];
 const got = new Map<number, Record<string, number>>();
 for (const [alias, group, object, payload, at] of received) {
   const track = aliasTrack.get(alias) ?? `alias${alias}`;
   counts[track] = (counts[track] ?? 0) + 1;
   collector.add(track, group, object, payload);
   const b = blockOf(group, object);
-  if (at < tReady) beforeReady = Math.max(beforeReady, b); else firstAfter = Math.min(firstAfter, b);
-  last = Math.max(last, b);
+  arrivals.push({ track, block: b, at });
   const g = got.get(b) ?? {};
   g[track] = (g[track] ?? 0) + 1;
   got.set(b, g);
 }
-
-// Counted: after every block that had a datagram before the last SUBSCRIBE_OK (or after the first
-// block seen, if none had), up to but not including the last block seen (cut by the stop).
-const first = 1 + (beforeReady >= 0 ? beforeReady : firstAfter);
-const ids = Number.isFinite(first) ? Array.from({ length: Math.max(0, last - first) }, (_, i) => first + i) : [];
+const ids = countedBlocks(arrivals, want, tReady);
 
 const clip = readVideoTrack(new Uint8Array(readFileSync(a.media)));
 const media = new MediaBlocks(clip, fec.blockObjects, 0, fec.blockObjects * bpg);
@@ -143,7 +139,7 @@ for (const b of ids) {
 }
 
 const failures: string[] = [];
-if (!counts[SOURCE_TRACK]) failures.push("no src datagram");
+for (const t of want) if (!counts[t]) failures.push(`no ${t} datagram`);
 if (tally.frameMismatch) failures.push(`${tally.frameMismatch} frame(s) differ from the clip`);
 if (a["expect-all"] && sent.received < sent.expected) failures.push(`${sent.expected - sent.received} datagram(s) missing`);
 if (a["expect-recovered"] !== undefined) {

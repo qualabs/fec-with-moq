@@ -145,9 +145,11 @@ catalog, `src` and the first `--take` rungs, then prints one JSON object:
   from the catalog and the clip), in `datagrams` and `shortDetail`;
 - how many blocks arrived intact, were recovered, were lost, or had no datagram at all (`missing`).
 
-Only blocks after every block that had a datagram before the last rung's SUBSCRIBE_OK, and before the
-last block seen, are counted. It exits 1 if no `src` datagram arrived, a frame differs from the clip's,
-or a check it was asked for fails: `--expect-all` (every datagram sent arrived; at `--drop-src 0`),
+Counted are the blocks from the first one where `src` and every taken rung have each delivered a
+datagram, after every block that had a datagram before the last rung's SUBSCRIBE_OK, and before the
+last block seen. moqx can start a late subscriber's rungs one or more groups after its `src`; the
+blocks before that are the join, not losses. It exits 1 if `src` or a taken rung delivered no
+datagram, a frame differs from the clip's, or a check it was asked for fails: `--expect-all` (every datagram sent arrived; at `--drop-src 0`),
 `--expect-recovered MIN` (at least MIN blocks recovered and none lost).
 
 ```sh
