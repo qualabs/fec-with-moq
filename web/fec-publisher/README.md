@@ -168,7 +168,9 @@ the page's record: state, frames decoded, gaps between drawn frames, and the FEC
 (`blocksWhole`, `blocksRecovered`, `blocksAbandoned`, `sourceLost`, `repairSymbols`), with `ok` and the
 checks that `failed`; it exits 1 if one fails. Frames must be decoded; with `--drop-src P` (the loss the
 publisher was started with) the FEC stage must also have lost source, recovered blocks and abandoned at
-most `--max-abandoned` (0). `--demo` opens `demo.html` instead, which uses Playa's default
+most `--max-abandoned` (0). The abandoned blocks before the stage's first whole or recovered block are
+the join, not losses: a player that joins mid-block can get its repair and too little of its source.
+They are listed in `joinAbandoned` and not counted. `--demo` opens `demo.html` instead, which uses Playa's default
 `catalogBootstrap`. To watch it, open
 `examples/fec-with-moq/demo.html?url=…&ns=…&ver=draft-18&fec=1&rungs=3&overlay=1&certHash=$HASH`.
 
