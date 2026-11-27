@@ -46,4 +46,4 @@ for (codec, w, h), bpg, frames, n, gap, rungs, sym, source, stride, plain in CAS
                   "objectStride": stride, "plain": plain, "generatedAt": json.loads(out)["generatedAt"],
                   "json": out.decode("ascii")})
 
-json.dump({"generator": "scripts/fec_catalog_vectors.py", "cases": cases}, sys.stdout, separators=(",", ":"))
+json.dump({"cases": cases}, sys.stdout, separators=(",", ":"))

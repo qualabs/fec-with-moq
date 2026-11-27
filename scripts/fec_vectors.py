@@ -115,6 +115,6 @@ for idx in (None, 5):
                  "indexed": idx is not None, "n_objects": len(sizes), "sizes": us,
                  "index": repair_index(p), "symbol": b64(usym), "length": len(p)})
 
-json.dump({"generator": "scripts/fec_vectors.py", "codec": "isal", "field": "GF(2^8) poly 0x11d",
+json.dump({"codec": "isal", "field": "GF(2^8) poly 0x11d",
            "matrix": "systematic Cauchy, row i>=k col c = gf_inv(i XOR c) (ISA-L gf_gen_cauchy1_matrix)",
            "symbol_size": SYMBOL_SIZE, "blocks": blocks, "wire": wire}, sys.stdout, separators=(",", ":"))

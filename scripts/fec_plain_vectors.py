@@ -37,7 +37,7 @@ track = PlainTrack.__new__(PlainTrack)          # produce() needs only the sched
 track.schedule, track.n_blocks = sch, n_blocks
 out = Recorder()
 asyncio.run(track.produce(out))
-json.dump({"generator": "scripts/fec_plain_vectors.py", "clip": os.path.basename(sys.argv[1]),
+json.dump({"clip": os.path.basename(sys.argv[1]),
            "blockObjects": sch.n_objects, "gapS": sch.gap_s, "blocksPerGroup": sch.blocks_per_group,
            "t0Us": sch._t0_us,
            "frames": [{"payload": b64(p), "key": k} for b in range(n_blocks) for p, k in sch.media.block(b)],

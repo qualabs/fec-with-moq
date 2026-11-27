@@ -94,5 +94,5 @@ for b in (9, 10):
                    "source": [[g, o, sch.address(b, j)[2], sha(p)] for j, (g, o, _, p, _) in enumerate(src)],
                    "repair": rungs})
 
-json.dump({"generator": "scripts/fec_schedule_vectors.py", "object_stride": 256, "rung_slices": slices,
+json.dump({"object_stride": 256, "rung_slices": slices,
            "addresses": addresses, "cut_blocks": cuts, "objects": blocks}, sys.stdout, separators=(",", ":"))

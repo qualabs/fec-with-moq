@@ -53,5 +53,5 @@ cases.append(case("k=255 m=1, symbol size 16", objects([16 * 255]), 1, 16))
 cases.append(case("255 objects (n_objects limit), symbol size 64", objects([rng.randint(1, 3) for _ in range(255)]), 2, 64))
 cases.append(case("one 65535 B object (size limit), m=3", objects([65535]), 3))
 
-json.dump({"generator": "scripts/fec_encoder_vectors.py", "codec": "isal", "cases": cases}, sys.stdout,
+json.dump({"codec": "isal", "cases": cases}, sys.stdout,
           separators=(",", ":"))

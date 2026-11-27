@@ -41,5 +41,5 @@ for b in range(6):
                    "source_objects": [b64(pack_repair(sizes, s, "isal")) for s in syms],
                    "repair_objects": [b64(pack_repair(sizes, r, "isal")) for r in rep],
                    "cases": cases})
-json.dump({"generator": "scripts/fec_media_vectors.py", "clip": os.path.basename(sys.argv[1]),
+json.dump({"clip": os.path.basename(sys.argv[1]),
            "codec": sch.media.codec, "blocks": blocks}, sys.stdout, separators=(",", ":"))
