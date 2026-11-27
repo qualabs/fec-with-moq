@@ -104,6 +104,26 @@ How it sends:
   - 14: the publisher runs npm `@openmoq/webtransport` 0.7.0 and the player the fork at `60d877a`.
     Both are draft 18, and the run evidence records both.
 
+## Publisher options
+
+| Option | Default | What |
+|---|---|---|
+| `--url` | | the relay's WebTransport URL |
+| `--hash` | | SHA-256 of the relay's self-signed certificate (hex) |
+| `--ns` | | the namespace to announce |
+| `--media` | | the AV1 mp4 to publish, looped |
+| `--objects` | 12 | frames per block |
+| `--gap` | 0.2 | block period, in seconds |
+| `--gop-frames` | `--objects` | frames per GOP, i.e. per MoQ group (a multiple of `--objects`) |
+| `--rungs` | 0.15,0.15,0.15 | each repair rung's fraction of a block's source symbols; `''` for no repair |
+| `--drop-src` | 0 | fraction of `src` datagrams dropped before sending (simulated loss) |
+| `--seed` | 7 | seed of the `--drop-src` draw |
+| `--pace-source` | 0.5 | fraction of the block period a block's source is spread over |
+| `--pace-repair` | 0.4 | fraction of the block period each rung's repair is spread over, after the source |
+| `--catalog-interval` | 2 | seconds between catalog groups |
+| `--plain-track` | video | the plain track's name in the catalog; `''` for no plain track |
+| `--secs` | | stop after this many seconds (default: run until Ctrl-C) |
+
 ## Files
 
 | Path | What |
@@ -115,6 +135,7 @@ How it sends:
 | `src/publisher.ts` | announce, answer SUBSCRIBE/FETCH, send the catalog and the blocks |
 | `src/filter.ts` | a SUBSCRIBE's filter, its window from the Largest Object, SUBSCRIBE_OK's LARGEST_OBJECT |
 | `src/collector.ts` | the other end, for checks: datagrams back into blocks, decoded with `web/fec-decoder` |
+| `src/connect.ts` | the draft-18 `MoqtConnection` over the FAILS WebTransport client, pinned to the relay's certificate hash; the session's datagram ceiling and QUIC datagram counters |
 | `src/cli.ts`, `src/options.ts` | the publisher's command line and its options and defaults |
 | `scripts/subscribe-check.ts` | a Node subscriber through the relay: counts objects per track, compares each block's datagrams with what was sent, rebuilds each block and compares its frames with the clip |
 | `scripts/player-check.mjs` | the Playa FEC test page (moq-playa `fec-with-moq-v2`), headless in the system Chrome |
@@ -133,12 +154,13 @@ Node 24 runs the `.ts` files directly. One terminal per long-running command.
 
 ```sh
 RUN=$XDG_RUNTIME_DIR/fec-publisher-$(date +%s); mkdir -p $RUN/certs; cd $RUN
+MOQX=moqx-fec-$$   # a container name of your own; others may run moqx on the same machine
 # 1. a certificate (ECDSA P-256, at most 14 days) and its hash
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 10 -subj /CN=localhost \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -keyout certs/key.pem -out certs/cert.pem && chmod 644 certs/key.pem
 HASH=$(openssl x509 -in certs/cert.pem -outform der | sha256sum | cut -d' ' -f1)
 # 2. moqx (0.3.8+: older ones end a datagram-only session after 60 s)
-docker run -d --rm --name moqx-fec -p 127.0.0.1:4473:4433/udp -v $RUN/certs:/certs:ro \
+docker run -d --rm --name $MOQX -p 127.0.0.1:4473:4433/udp -v $RUN/certs:/certs:ro \
   -e MOQX_CERT=/certs/cert.pem -e MOQX_KEY=/certs/key.pem -e MOQX_PICO_ENABLE=false ghcr.io/openmoq/moqx:latest
 # 3. a clip: AV1, 360p60, a key frame every 12 frames (a GOP is a block of 12)
 ffmpeg -f lavfi -i testsrc2=size=640x360:rate=60 -t 10 -c:v libsvtav1 -preset 10 -g 12 -crf 50 \
@@ -179,9 +201,20 @@ node scripts/subscribe-check.ts --url https://127.0.0.1:4473/moq-relay --hash $H
   --take 3 --secs 10 [--expect-all | --expect-recovered 1]
 ```
 
-**Check with the Playa FEC player.** Build the examples of moq-playa `fec-with-moq-v2` (its
-`FEC-WITH-MOQ.md`, "Build"; `FEC_DECODER_SRC` points at this repository's `web/fec-decoder/src`),
-serve `examples/dist` on 127.0.0.1, then:
+**Check with the Playa FEC player.** Build the examples of moq-playa `fec-with-moq-v2`. Its
+`FEC-WITH-MOQ.md` expects a `fec-with-moq` checkout next to it; `FEC_DECODER_SRC` points the build at
+this repository's decoder instead. pnpm comes through corepack (`corepack enable`, or prefix `corepack`):
+
+```sh
+git clone --branch fec-with-moq-v2 https://github.com/qualabs/moq-playa-fec.git moq-playa
+cd moq-playa
+FEC_DECODER_SRC=/path/to/fec-with-moq/web/fec-decoder/src corepack pnpm install --frozen-lockfile
+FEC_DECODER_SRC=/path/to/fec-with-moq/web/fec-decoder/src corepack pnpm -r build   # also builds examples/dist/
+npx --yes http-server examples/dist -a 127.0.0.1 -p PAGE_PORT                     # serve the pages
+```
+
+`player-check` loads Playwright from that checkout's `node_modules`, so `PLAYA` must be the checkout
+where `pnpm install` ran:
 
 ```sh
 PLAYA=/path/to/moq-playa node scripts/player-check.mjs --page http://127.0.0.1:PAGE_PORT \
@@ -202,4 +235,4 @@ only 104 and 335 at 1080p, so there a 1080p run checks the FEC stage, not playba
 `catalogBootstrap`. To watch it, open
 `examples/fec-with-moq/demo.html?url=…&ns=…&ver=draft-18&fec=1&rungs=3&overlay=1&certHash=$HASH`.
 
-Stop with Ctrl-C (or `--secs`), then `docker rm -f moqx-fec; rm -rf $RUN`.
+Stop with Ctrl-C (or `--secs`), then `docker rm -f $MOQX; rm -rf $RUN`.
