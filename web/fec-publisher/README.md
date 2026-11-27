@@ -171,16 +171,19 @@ serve `examples/dist` on 127.0.0.1, then:
 ```sh
 PLAYA=/path/to/moq-playa node scripts/player-check.mjs --page http://127.0.0.1:PAGE_PORT \
   --url https://127.0.0.1:4473/moq-relay --ns NS --hash $HASH --fec 3 [--cb subscribe|auto | --demo] \
-  [--drop-src 0.05 [--max-abandoned 0]] --secs 30
+  [--drop-src 0.05] [--max-abandoned 0] [--min-frames 900] --secs 30
 ```
 
 `--fec N` is the number of repair rungs the player takes (`0`: FEC stage on, no repair; `''`: FEC off,
 the player plays the plain `video` track). The output is
 the page's record: state, frames decoded, gaps between drawn frames, and the FEC stage's counters
 (`blocksWhole`, `blocksRecovered`, `blocksAbandoned`, `sourceLost`, `repairSymbols`), with `ok` and the
-checks that `failed`; it exits 1 if one fails. Frames must be decoded; with `--drop-src P` (the loss the
-publisher was started with) the FEC stage must also have lost source, recovered blocks and abandoned at
-most `--max-abandoned` (0). `--demo` opens `demo.html` instead, which uses Playa's default
+checks that `failed`; it exits 1 if one fails. At least `--min-frames` frames (1) must be decoded. With
+the FEC stage on, at most `--max-abandoned` blocks (0) may be abandoned or missing, at any loss; with
+`--drop-src P` (the loss the publisher was started with) the FEC stage must also have lost source and
+recovered blocks. The frames floor is the caller's: 30 s of a 60 fps clip is 1800 frames. On the
+shared 4-CPU machine of the 2026-11-27 runs, headless Chrome decoded 1738 to 1776 of them at 360p but
+only 104 and 335 at 1080p, so there a 1080p run checks the FEC stage, not playback. `--demo` opens `demo.html` instead, which uses Playa's default
 `catalogBootstrap`. To watch it, open
 `examples/fec-with-moq/demo.html?url=…&ns=…&ver=draft-18&fec=1&rungs=3&overlay=1&certHash=$HASH`.
 

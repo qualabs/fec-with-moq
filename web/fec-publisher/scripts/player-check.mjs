@@ -1,13 +1,14 @@
 // Marc's Playa FEC test page (examples/fec-with-moq/index.html of moq-playa branch fec-with-moq-v2),
 // headless in the system Chrome, for SECS seconds; prints the page's record (state, frames, gaps, FEC
-// counters) with the checks below, and exits 1 if one fails: frames decoded; with --drop-src P > 0
-// (the loss the publisher was started with) also source lost, blocks recovered, and at most --max-abandoned
-// blocks abandoned. --demo opens demo.html instead (Playa's default catalogBootstrap, no cb) and reads
+// counters) with the checks below, and exits 1 if one fails: at least --min-frames frames decoded (1);
+// with the FEC stage on, at most --max-abandoned blocks (0) abandoned or missing, at any loss; with
+// --drop-src P > 0 (the loss the publisher was started with) also source lost and blocks recovered.
+// --demo opens demo.html instead (Playa's default catalogBootstrap, no cb) and reads
 // the player's stats and fecStats() from it. Playwright comes from the Playa checkout
 // (PLAYA=/path/to/moq-playa, after its pnpm install).
 //
 //   PLAYA=... node scripts/player-check.mjs --page http://127.0.0.1:8283 --url URL --ns NS --hash HEX
-//     [--fec 3] [--cb subscribe|auto] [--demo] [--drop-src P] [--max-abandoned N] [--secs 30]
+//     [--fec 3] [--cb subscribe|auto] [--demo] [--drop-src P] [--max-abandoned N] [--min-frames N] [--secs 30]
 //     [--log warn] [--console 15] [--chrome /usr/bin/google-chrome]
 
 import { createRequire } from "node:module";
@@ -20,7 +21,8 @@ const { values: a } = parseArgs({
     secs: { type: "string", default: "30" }, log: { type: "string", default: "warn" },
     chrome: { type: "string", default: "/usr/bin/google-chrome" },
     demo: { type: "boolean", default: false }, "drop-src": { type: "string", default: "0" },
-    "max-abandoned": { type: "string", default: "0" }, console: { type: "string", default: "15" },
+    "max-abandoned": { type: "string", default: "0" }, "min-frames": { type: "string", default: "1" },
+    console: { type: "string", default: "15" },
   },
 });
 if (!process.env.PLAYA || !a.page || !a.url || !a.ns) {
@@ -57,11 +59,14 @@ const gaps = draws.slice(1).map((t, i) => t - draws[i]);
 const fec = run?.fec;
 const keep = ["blocksSeen", "blocksWhole", "blocksRecovered", "blocksAbandoned", "blocksMissing", "blocksSkipped",
   "framesReleased", "framesDropped", "sourceSymbols", "sourceLost", "repairSymbols", "decodeCount", "decodeFailures"];
-const drop = Number(a["drop-src"]), maxAbandoned = Number(a["max-abandoned"]);
-const checks = [["framesDecoded > 0", (last.framesDecoded ?? 0) > 0]];
+const drop = Number(a["drop-src"]), maxAbandoned = Number(a["max-abandoned"]), minFrames = Number(a["min-frames"]);
+const checks = [[`framesDecoded >= ${minFrames}`, (last.framesDecoded ?? 0) >= minFrames]];
+if (a.fec !== "") {
+  checks.push([`fec.blocksAbandoned + fec.blocksMissing <= ${maxAbandoned}`,
+    fec != null && (fec.blocksAbandoned ?? 0) + (fec.blocksMissing ?? 0) <= maxAbandoned]);
+}
 if (drop > 0) {
-  checks.push(["fec.sourceLost > 0", (fec?.sourceLost ?? 0) > 0], ["fec.blocksRecovered > 0", (fec?.blocksRecovered ?? 0) > 0],
-    [`fec.blocksAbandoned <= ${maxAbandoned}`, fec != null && fec.blocksAbandoned <= maxAbandoned]);
+  checks.push(["fec.sourceLost > 0", (fec?.sourceLost ?? 0) > 0], ["fec.blocksRecovered > 0", (fec?.blocksRecovered ?? 0) > 0]);
 }
 const failed = checks.filter(([, ok]) => !ok).map(([c]) => c);
 console.log(JSON.stringify({
