@@ -1,7 +1,7 @@
 // Marc's Playa FEC test page (examples/fec-with-moq/index.html of moq-playa branch fec-with-moq-v2),
-// headless in the system Chrome, for SECS seconds; prints the summary playa_play.py prints, trimmed,
-// with the checks below, and exits 1 if one fails: frames decoded; with --drop-src P > 0 (the loss
-// the publisher was started with) also source lost, blocks recovered, and at most --max-abandoned
+// headless in the system Chrome, for SECS seconds; prints the page's record (state, frames, gaps, FEC
+// counters) with the checks below, and exits 1 if one fails: frames decoded; with --drop-src P > 0
+// (the loss the publisher was started with) also source lost, blocks recovered, and at most --max-abandoned
 // blocks abandoned. --demo opens demo.html instead (Playa's default catalogBootstrap, no cb) and reads
 // the player's stats and fecStats() from it. Playwright comes from the Playa checkout
 // (PLAYA=/path/to/moq-playa, after its pnpm install).

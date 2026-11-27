@@ -1,8 +1,8 @@
 // The datagrams of one block for the three-track catalog's FEC tracks: `src` carries one plain
 // repair-format object per source symbol, `rep<r>` the rung's slice of the global repair symbols
-// (moq.py's DatagramSourceTrack and repair rungs, through web/fec-decoder's schedule). Source first,
-// then each rung in order: written in this order to one datagram queue, a block's repair stays
-// behind its source, and the source leaves before the repair is encoded.
+// (through web/fec-decoder's schedule). Source first, then each rung in order: written in this order
+// to one datagram queue, a block's repair stays behind its source, and the source leaves before the
+// repair is encoded.
 
 import { encode, MAX_N } from "fec-decoder/src/encoder.ts";
 import { layoutBlock, toSymbols, SYMBOL_SIZE } from "fec-decoder/src/layout.ts";

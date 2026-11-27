@@ -1,6 +1,6 @@
-// SPAN symbol layout (src/fecmoq/symbols.py): a block's objects are packed back to back and cut
-// into k = ceil(total / symbolSize) symbols; only the last symbol is zero-padded. A lost object
-// erases every symbol it touches, including symbols it shares with a neighbour.
+// SPAN symbol layout: a block's objects are packed back to back and cut into
+// k = ceil(total / symbolSize) symbols; only the last symbol is zero-padded. A lost object erases
+// every symbol it touches, including symbols it shares with a neighbour.
 
 export const SYMBOL_SIZE = 1100;
 

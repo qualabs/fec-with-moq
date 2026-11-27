@@ -1,5 +1,5 @@
-// Encoder for the ISA-L backend of src/fecmoq/codec.py, byte for byte: repair symbol j of a block
-// of k source symbols is the sum over source columns c of cauchy(k, j, c) * source[c], i.e. rows
+// Encoder for codec 2 (ISA-L), byte for byte with ISA-L's own: repair symbol j of a block of k
+// source symbols is the sum over source columns c of cauchy(k, j, c) * source[c], i.e. rows
 // k..k+m-1 of gf_gen_cauchy1_matrix(k + m, k) applied as ec_init_tables + ec_encode_data do.
 // The code is systematic: source symbols are sent as they are and only the repair is computed here.
 
@@ -16,7 +16,7 @@ function checkParams(k: number, m: number): void {
 }
 
 /**
- * Parity updated as each source symbol is produced, in any order (codec.IsalIncrementalEncoder):
+ * Parity updated as each source symbol is produced, in any order:
  * once all k are added, repair() equals encode() of the same symbols.
  */
 export class IncrementalEncoder {
@@ -54,8 +54,8 @@ export class IncrementalEncoder {
 }
 
 /**
- * The m repair symbols of a block of k = source.length equal-length source symbols
- * (codec.Coder(k, m, "isal").encode). Repair symbol j doesn't depend on m.
+ * The m repair symbols of a block of k = source.length equal-length source symbols. Repair symbol j
+ * doesn't depend on m.
  */
 export function encode(source: Uint8Array[], m: number): Uint8Array[] {
   checkParams(source.length, m);

@@ -1,28 +1,28 @@
-// Block schedule of src/fecmoq/moq.py (rung_slices, BlockSchedule.address and repair_address) for
-// the three-track catalog's mapping: source symbols and repair on datagrams, global repair ids, a
-// MoQ group of blocksPerGroup blocks, symbol j of the group's q-th block is Object q * OBJECT_STRIDE + j.
+// Block schedule of the three-track catalog's mapping: source symbols and repair on datagrams,
+// global repair ids, a MoQ group of blocksPerGroup blocks, symbol j of the group's q-th block is
+// Object q * OBJECT_STRIDE + j. Rungs split the repair symbols into consecutive slices.
 
 import { layoutBlock, toSymbols } from "./layout.ts";
 import { packRepairObject } from "./wire.ts";
 
-/** moq.OBJECT_STRIDE: the object ids of one block within a group of several. */
+/** The object ids of one block within a group of several. */
 export const OBJECT_STRIDE = 256;
 
-/** A Python range: start inclusive, stop exclusive. */
+/** Start inclusive, stop exclusive. */
 export interface Slice { start: number; stop: number }
 
-/** (group, object, starts a group), as BlockSchedule.address returns. */
+/** (group, object, starts a group). */
 export type Address = [group: number, object: number, groupStart: boolean];
 
 export interface TrackObject { group: number; object: number; groupStart: boolean; payload: Uint8Array }
 
-/** Python 3 round() on a float: ties go to the even integer. */
+/** Round to an integer, ties to the even one. */
 export function roundHalfEven(x: number): number {
   const f = Math.floor(x), d = x - f;
   return d < 0.5 ? f : d > 0.5 ? f + 1 : f % 2 === 0 ? f : f + 1;
 }
 
-/** moq.rung_slices: each rung's global repair indices, additive and consecutive, at least one each. */
+/** Each rung's global repair indices: round(k * fraction) half to even, at least one, consecutive from 0. */
 export function rungSlices(k: number, rungFracs: number[]): Slice[] {
   let start = 0;
   return rungFracs.map((f) => {
@@ -40,7 +40,7 @@ function check(name: string, v: number, min = 0): void {
   if (!Number.isInteger(v) || v < min) throw new RangeError(`${name} must be an integer >= ${min}; got ${v}`);
 }
 
-/** BlockSchedule.address: symbol j of block b, source or repair (j = global repair index). */
+/** Symbol j of block b, source or repair (j = global repair index). */
 export function address(b: number, j: number, blocksPerGroup = 1): Address {
   check("block", b);
   check("symbol index", j);
@@ -51,14 +51,14 @@ export function address(b: number, j: number, blocksPerGroup = 1): Address {
   return [Math.floor(b / blocksPerGroup), q * OBJECT_STRIDE + j, q === 0 && j === 0];
 }
 
-/** BlockSchedule.repair_address: a rung's n-th symbol, global index j; every rung opens each group. */
+/** A rung's n-th symbol, global index j; every rung opens each group. */
 export function repairAddress(b: number, n: number, j: number, blocksPerGroup = 1): Address {
   check("rung position", n);
   const [g, o] = address(b, j, blocksPerGroup);
   return [g, o, n === 0 && b % blocksPerGroup === 0];
 }
 
-/** Mp4Gops' cut: whole GOPs of `gop` items, each starting on a key item, in blocks of n; the tail is dropped. */
+/** Whole GOPs of `gop` items, each starting on a key item, in blocks of n; the tail is dropped. */
 export function cutBlocks<T>(items: T[], isKey: (item: T) => boolean, n: number,
                              gop = n): { blocks: T[][]; blocksPerGroup: number } {
   check("n", n, 1);

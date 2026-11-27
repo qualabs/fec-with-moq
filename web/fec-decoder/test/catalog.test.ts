@@ -1,5 +1,5 @@
-// The three-track catalog against fecmoq's catalog_json (catalog-vectors.json, from
-// scripts/fec_catalog_vectors.py), byte for byte; and Playa's fecInfoFromCatalog on it.
+// The three-track catalog against the reference vectors (catalog-vectors.json), byte for byte; and
+// Playa's fecInfoFromCatalog on it.
 //
 //   node --test test/catalog.test.ts
 
@@ -8,14 +8,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   catalog, catalogJson, type CatalogMedia, type CatalogOptions, formatG, packagingMetadata, parsePackagingMetadata,
-  pyFloat, pyJson, pyRound,
+  formatJsonFloat, roundHalfEvenTo, toCatalogJson,
 } from "../src/catalog.ts";
 
 interface Case extends CatalogOptions { media: CatalogMedia; json: string }
 
 const url = new URL("./catalog-vectors.json", import.meta.url);
 const v: { cases: Case[] } | null = existsSync(url) ? JSON.parse(readFileSync(url, "utf8")) : null;
-const skip = v ? false : "run scripts/fec_catalog_vectors.py";
+const skip = v ? false : "no catalog-vectors.json";
 
 // playa:packages/player/src/fec-stage.ts fecInfoFromCatalog (60d877a), the source and rungs only
 function fecInfoFromCatalog(plainName: string, tracks: Record<string, unknown>[]) {
@@ -35,7 +35,7 @@ function fecInfoFromCatalog(plainName: string, tracks: Record<string, unknown>[]
   };
 }
 
-test("catalogJson equals catalog_json byte for byte", { skip }, () => {
+test("catalogJson equals the reference catalogs byte for byte", { skip }, () => {
   for (const c of v!.cases) {
     const out = catalogJson(c.media, c);
     assert.equal(new TextDecoder().decode(out), c.json, `${c.plain} ${c.gapS} ${c.rungs}`);
@@ -67,14 +67,14 @@ test("defaults: source src, stride 256, plain video, rungs in order", () => {
   assert.deepEqual(fecInfoFromCatalog("video", cat.tracks)?.rungs, ["rep1", "rep2"]);
 });
 
-test("Python number formatting: repr, round, :g", () => {
-  assert.deepEqual([60, 0.062, 2.55e16, 1e-5, 1e15, 0.0001, -1.5].map(pyFloat),
+test("number formatting: float fields, half-to-even rounding, %g", () => {
+  assert.deepEqual([60, 0.062, 2.55e16, 1e-5, 1e15, 0.0001, -1.5].map(formatJsonFloat),
     ["60.0", "0.062", "2.55e+16", "1e-05", "1000000000000000.0", "0.0001", "-1.5"]);
-  assert.deepEqual([[0.0625, 3], [0.1875, 3], [2.675, 2], [56.7000000001, 3]].map(([x, n]) => pyRound(x, n)),
+  assert.deepEqual([[0.0625, 3], [0.1875, 3], [2.675, 2], [56.7000000001, 3]].map(([x, n]) => roundHalfEvenTo(x, n)),
     [0.062, 0.188, 2.67, 56.7]);
   assert.deepEqual([0.2, 1, 1e-5, 0.123456789, 1234565, 1234575, 999999.5, 0.00012, 100000].map(formatG),
     ["0.2", "1", "1e-05", "0.123457", "1.23456e+06", "1.23458e+06", "1e+06", "0.00012", "100000"]);
-  assert.equal(pyJson({ a: "víd\u007f\"", b: [1, true, null], framerate: 2 }),
+  assert.equal(toCatalogJson({ a: "víd\u007f\"", b: [1, true, null], framerate: 2 }),
     '{"a": "v\\u00edd\\u007f\\"", "b": [1, true, null], "framerate": 2.0}');
   assert.throws(() => packagingMetadata({ a: "x;y" }), RangeError);
   assert.deepEqual(parsePackagingMetadata("a=1;a=2;;junk;b="), { a: "1", b: "" });

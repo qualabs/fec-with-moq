@@ -1,5 +1,5 @@
-// Decodes the vectors scripts/fec_vectors.py wrote from our Python ISA-L encoder, and checks the
-// result is byte-identical to the original objects (or fails cleanly where the case is undecodable).
+// Decodes the reference vectors (vectors.json, repair made with ISA-L), and checks the result is
+// byte-identical to the original objects (or fails cleanly where the case is undecodable).
 //
 //   node --test test/decoder.test.ts
 

@@ -1,6 +1,6 @@
-// A SUBSCRIBE's filter (draft 18 §5.1.2) against what a track has already sent, as aiomoqt's
-// _filter_window: the window is fixed when the subscription is accepted, from the Largest Object that
-// SUBSCRIBE_OK reports, and a track sends a subscriber only the Locations inside it.
+// A SUBSCRIBE's filter (draft 18 §5.1.2) against what a track has already sent: the window is fixed
+// when the subscription is accepted, from the Largest Object that SUBSCRIBE_OK reports, and a track
+// sends a subscriber only the Locations inside it.
 
 import { decodeSubscriptionFilter, MessageParam, subscriptionWindow, windowContains,
   type Parameters, type SubscriptionFilter, type SubscriptionWindow } from "@openmoq/transport";

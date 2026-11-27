@@ -1,6 +1,5 @@
-// The TS encoder against our Python ISA-L encoder, byte for byte: the repair objects in vectors.json
-// and media-vectors*.json, and encoder-vectors.json (scripts/fec_encoder_vectors.py). Then round
-// trips through the TS decoder.
+// The encoder against ISA-L's repair, byte for byte: the reference vectors in vectors.json,
+// media-vectors*.json and encoder-vectors.json. Then round trips through the decoder.
 //
 //   node --test test/encoder.test.ts
 
@@ -36,7 +35,7 @@ for (const [file, blocks] of wireSets) for (const b of blocks) {
 
 const goldenUrl = new URL("./encoder-vectors.json", import.meta.url);
 const golden: Golden[] = existsSync(goldenUrl) ? load("./encoder-vectors.json").cases : [];
-test("encoder-vectors.json present", { skip: golden.length ? false : "run scripts/fec_encoder_vectors.py" }, () => {});
+test("encoder-vectors.json present", { skip: golden.length ? false : "no encoder-vectors.json" }, () => {});
 for (const g of golden) {
   test(`encoder-vectors.json ${g.name}: repair equals ISA-L's`, () => {
     const lay = layoutBlock(g.sizes, g.symbol_size);

@@ -1,4 +1,4 @@
-// Repair-object wire format (src/fecmoq/wire.py), parsed and packed:
+// Repair-object wire format, parsed and packed:
 //
 //   codec:u8 | n_objects:u8 | size[0]:u16 ... size[n-1]:u16 | symbol
 //   codec|0x80:u8 | n_objects:u8 | size[0]:u16 ... size[n-1]:u16 | index:u16 | symbol   (INDEXED)
@@ -10,7 +10,7 @@
 export const CODEC_ZFEC = 1;
 export const CODEC_ISAL = 2;
 export const INDEXED = 0x80;
-/** wire.DATAGRAM_MAX_PAYLOAD: pack_repair refuses a bigger repair object whatever the mapping. */
+/** The largest repair object packRepairObject writes, whatever the mapping. */
 export const DATAGRAM_MAX_PAYLOAD = 1152;
 
 export interface RepairObject {
@@ -36,7 +36,7 @@ export function parseRepairObject(p: Uint8Array): RepairObject {
   return { codec, indexed, sizes, index, symbol: p.subarray(header) };
 }
 
-/** wire.pack_repair: index (the global repair index) selects the INDEXED form. */
+/** The inverse of parseRepairObject: index (the global repair index) selects the INDEXED form. */
 export function packRepairObject(sizes: number[], symbol: Uint8Array, codec = CODEC_ISAL,
                                  index: number | null = null): Uint8Array {
   if (codec !== CODEC_ZFEC && codec !== CODEC_ISAL) throw new RangeError(`unknown repair codec id ${codec}`);

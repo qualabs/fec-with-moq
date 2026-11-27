@@ -1,4 +1,4 @@
-// media.py's MediaBlockSchedule for the datagram tracks: an mp4's frames cut into blocks of n
+// The media for the datagram tracks: an mp4's frames cut into blocks of n
 // (cutBlocks), each frame a source object `props_len:u16 | LOC properties | payload`, the properties
 // in the draft-18 encoding (the LOC timestamp, µs since the Unix epoch). Block b loops the clip and
 // is stamped t0 + b * gap + i * gap / n, so the timeline runs at the block rate.
@@ -46,7 +46,7 @@ export class MediaBlocks {
     this.blocksPerGroup = cut.blocksPerGroup;
   }
 
-  /** What catalogJson needs: the frame sizes of the whole GOPs, as Mp4Gops.sizes. */
+  /** What catalogJson needs: the frame sizes of the whole GOPs. */
   catalogMedia(): CatalogMedia {
     return {
       codec: this.track.codec, width: this.track.width, height: this.track.height,

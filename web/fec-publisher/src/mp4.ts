@@ -1,6 +1,6 @@
-// The first video track of an mp4 as its samples, the part of aiomoqt's Mp4Reader that
-// media.py's Mp4Gops reads: sample bytes, key flags, codec string, size and frame rate.
-// AV1 only: its sequence header travels in band, so a LOC frame needs no decoder description.
+// The first video track of an mp4 as its samples: sample bytes, key flags, codec string, size and
+// frame rate. AV1 only: its sequence header travels in band, so a LOC frame needs no decoder
+// description.
 
 export interface Sample { payload: Uint8Array; key: boolean }
 

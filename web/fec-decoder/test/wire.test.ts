@@ -1,6 +1,6 @@
-// packRepairObject against wire.pack_repair, byte for byte (encoder-vectors.json, from
-// scripts/fec_encoder_vectors.py), round trips through parseRepairObject, and a whole block from
-// source objects to repair objects on the wire and back through the decoder.
+// packRepairObject against the reference repair objects in encoder-vectors.json, byte for byte;
+// round trips through parseRepairObject; and a whole block from source objects to repair objects on
+// the wire and back through the decoder.
 //
 //   node --test test/wire.test.ts
 
@@ -18,9 +18,9 @@ const bytes = (s: string) => new Uint8Array(Buffer.from(s, "base64"));
 const goldenUrl = new URL("./encoder-vectors.json", import.meta.url);
 const golden: Golden[] = existsSync(goldenUrl) ? JSON.parse(readFileSync(goldenUrl, "utf8")).cases : [];
 
-test("encoder-vectors.json present", { skip: golden.length ? false : "run scripts/fec_encoder_vectors.py" }, () => {});
+test("encoder-vectors.json present", { skip: golden.length ? false : "no encoder-vectors.json" }, () => {});
 for (const g of golden) {
-  test(`encoder-vectors.json ${g.name}: packed equals pack_repair's, plain and INDEXED`, () => {
+  test(`encoder-vectors.json ${g.name}: packed equals the reference objects, plain and INDEXED`, () => {
     const repair = g.repair.map(bytes);
     assert.deepEqual(repair.map((r) => packRepairObject(g.sizes, r)), g.packed.map(bytes));
     assert.deepEqual(repair.map((r, j) => packRepairObject(g.sizes, r, CODEC_ISAL, j)), g.packed_indexed.map(bytes));

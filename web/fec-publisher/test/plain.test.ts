@@ -1,6 +1,6 @@
-// The plain `video` track against media.py's PlainTrack: plain-vectors.json (a block per group) and
-// plain-vectors-gop24.json (two blocks per group), from scripts/fec_plain_vectors.py, hold what
-// PlainTrack.produce() writes for the first blocks of a clip and the frames it wrote them from.
+// The plain `video` track against the reference vectors: plain-vectors.json (a block per group) and
+// plain-vectors-gop24.json (two blocks per group) hold the objects of the first blocks of a clip and
+// the frames they carry.
 //
 //   node --test test/plain.test.ts
 
@@ -10,13 +10,13 @@ import { test } from "node:test";
 import { MediaBlocks } from "../src/media.ts";
 import { plainObjects } from "../src/plain.ts";
 
-interface PyObject { group: number; object: number; groupStart: boolean; properties: string; payload: string; timestamp: number }
+interface RefObject { group: number; object: number; groupStart: boolean; properties: string; payload: string; timestamp: number }
 interface Vectors { blockObjects: number; gapS: number; blocksPerGroup: number; t0Us: number;
-  frames: { payload: string; key: boolean }[]; objects: PyObject[] }
+  frames: { payload: string; key: boolean }[]; objects: RefObject[] }
 const bytes = (s: string) => new Uint8Array(Buffer.from(s, "base64"));
 
 for (const file of ["plain-vectors.json", "plain-vectors-gop24.json"]) {
-  test(`${file}: objects, addresses and properties as PlainTrack writes them`, () => {
+  test(`${file}: objects, addresses and properties equal the reference objects`, () => {
     const v = JSON.parse(readFileSync(new URL(file, import.meta.url), "utf8")) as Vectors;
     const samples = v.frames.map((f) => ({ payload: bytes(f.payload), key: f.key }));
     const n = v.blockObjects;

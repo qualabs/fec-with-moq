@@ -1,6 +1,5 @@
-// The block schedule against fecmoq's (schedule-vectors.json, from scripts/fec_schedule_vectors.py):
-// rung slices, addresses, the GOP cut, and two blocks' source and repair objects as track_objects
-// writes them; plus the inverse Playa applies to an object's (group, object).
+// The block schedule against the reference vectors (schedule-vectors.json): rung slices, addresses,
+// the GOP cut, and two blocks' source and repair objects; plus the inverse Playa applies to an object's (group, object).
 //
 //   node --test test/schedule.test.ts
 
@@ -29,7 +28,7 @@ interface Vectors {
 
 const url = new URL("./schedule-vectors.json", import.meta.url);
 const v: Vectors | null = existsSync(url) ? JSON.parse(readFileSync(url, "utf8")) : null;
-const skip = v ? false : "run scripts/fec_schedule_vectors.py";
+const skip = v ? false : "no schedule-vectors.json";
 const sha = (p: Uint8Array) => createHash("sha256").update(p).digest("hex");
 const rows = (xs: TrackObject[]): Row[] => xs.map((x) => [x.group, x.object, x.groupStart, sha(x.payload)]);
 
@@ -39,13 +38,13 @@ function locate(group: number, object: number, blocksPerGroup: number): [number,
   return [group * blocksPerGroup + Math.floor(object / OBJECT_STRIDE), object % OBJECT_STRIDE];
 }
 
-test("roundHalfEven is Python's round(): ties to even", () => {
+test("roundHalfEven: ties to even", () => {
   assert.deepEqual([0.5, 1.5, 2.5, 4.5, 10.5, 0.49, 0.51, 3, 2.4999].map(roundHalfEven), [0, 2, 2, 4, 10, 0, 1, 3, 2]);
   assert.deepEqual(rungSlices(30, [0.15, 0.15, 0.15]), [{ start: 0, stop: 4 }, { start: 4, stop: 8 }, { start: 8, stop: 12 }]);
   assert.equal(Math.round(30 * 0.15), 5);
 });
 
-test("rungSlices equals rung_slices for k = 1..256", { skip }, () => {
+test("rungSlices equals the reference slices for k = 1..256", { skip }, () => {
   for (const c of v!.rung_slices) {
     c.by_k.forEach((s, i) => assert.deepEqual(rungSlices(i + 1, c.fracs).map((x) => [x.start, x.stop]), s, `${c.fracs} k=${i + 1}`));
   }
@@ -65,7 +64,7 @@ test("rungSlices: consecutive from 0, each rung at least one symbol", () => {
   assert.equal(repairTrackName(2), "rep2");
 });
 
-test("address and repairAddress equal BlockSchedule's for 1, 10 and 5 blocks per group", { skip }, () => {
+test("address and repairAddress equal the reference addresses for 1, 10 and 5 blocks per group", { skip }, () => {
   for (const a of v!.addresses) {
     assert.deepEqual(address(a.b, a.j, a.bpg), a.address, JSON.stringify(a));
     assert.deepEqual(repairAddress(a.b, a.n, a.j, a.bpg), a.repair_address, JSON.stringify(a));
@@ -97,7 +96,7 @@ test("Playa's locate() inverts address()", () => {
   }
 });
 
-test("cutBlocks equals Mp4Gops' cut", { skip }, () => {
+test("cutBlocks equals the reference GOP cut", { skip }, () => {
   for (const c of v!.cut_blocks) {
     const items = c.keys.map((key, i) => ({ i, key }));
     const run = () => cutBlocks(items, (x) => x.key, c.n, c.gop ?? undefined);
@@ -111,7 +110,7 @@ test("cutBlocks equals Mp4Gops' cut", { skip }, () => {
   }
 });
 
-test("sourceObjects and repairObjects equal track_objects' for the last block of a group and the next", { skip }, () => {
+test("sourceObjects and repairObjects equal the reference objects for the last block of a group and the next", { skip }, () => {
   for (const c of v!.objects) {
     const objects = c.objects.map((s) => new Uint8Array(Buffer.from(s, "base64")));
     const slices = rungSlices(layoutBlock(c.sizes).k, c.fracs);

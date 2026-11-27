@@ -1,5 +1,5 @@
 // The receiving end of the FEC tracks, for checks: source and repair datagrams gathered per block
-// (inverse of BlockSchedule.address), then each block rebuilt with web/fec-decoder.
+// (the inverse of the schedule's address), then each block rebuilt with web/fec-decoder.
 
 import { recoverSymbols } from "fec-decoder/src/decoder.ts";
 import { fromSymbols, layoutBlock } from "fec-decoder/src/layout.ts";

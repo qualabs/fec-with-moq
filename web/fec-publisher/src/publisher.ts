@@ -3,7 +3,7 @@
 // each block's datagrams at the block rate, the source before the repair is encoded. Each
 // subscription gets what its filter asks for, from the Largest Object its SUBSCRIBE_OK reports. The
 // plain track (`video`, for players without FEC) carries the same frames as LOC objects, a subgroup
-// stream per group (GOP), as media.py's PlainTrack. FETCH is refused (NOT_SUPPORTED).
+// stream per group (GOP). FETCH is refused (NOT_SUPPORTED).
 
 import { MAX_VI64, PublishDoneCode18, RequestError18, SubgroupIdMode, vi64EncodingLength,
   type SubscriptionWindow } from "@openmoq/transport";
@@ -275,10 +275,10 @@ export class FecPublisher {
   }
 
   /**
-   * A block of the plain track to each subscriber, as aiomoqt's PER_GROUP delivery: a subgroup stream
-   * per group, opened at the group's first object (FIRST_OBJECT set) and ended with FIN after its last
-   * (the header's END_OF_GROUP bit set). A subscriber joins at a group start, as aiomoqt's lanes do,
-   * unless its filter names a start Location inside a group.
+   * A block of the plain track to each subscriber: a subgroup stream per group, opened at the group's
+   * first object (FIRST_OBJECT set) and ended with FIN after its last (the header's END_OF_GROUP bit
+   * set). A subscriber joins at a group start, so a player starts at a key frame, unless its filter
+   * names a start Location inside a group.
    */
   private async sendPlain(objs: PlainObject[]): Promise<void> {
     const name = this.o.plain!;
@@ -314,9 +314,9 @@ export class FecPublisher {
   }
 
   /**
-   * Block b's source, then its repair (relay_fec.py's --pace-source and --pace-repair, the source one
-   * interval per block): each paced datagram waits for its slot. Paced rungs interleave by slot, as
-   * Python's one task per rung does; unpaced, they go back to back in rung order.
+   * Block b's source, then its repair (--pace-source and --pace-repair, the source one interval per
+   * block): each paced datagram waits for its slot. Paced rungs interleave by slot; unpaced, they go
+   * back to back in rung order.
    */
   private async sendBlock(b: number, objects: Uint8Array[], rungs: number[], gapMs: number): Promise<void> {
     const { paceSource = 0, paceRepair = 0, media } = this.o;

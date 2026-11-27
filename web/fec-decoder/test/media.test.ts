@@ -1,6 +1,6 @@
-// Shaka phase 2, stage B check in the TS decoder: real LOC frames (scripts/fec_media_vectors.py, from
-// the FEC publisher's MediaBlockSchedule) rebuilt from source-symbol and repair datagrams after
-// erasures, then split back into props_len:u16 | properties | payload.
+// Real LOC frames (the reference vectors in media-vectors*.json, cut into blocks as the FEC publisher
+// does) rebuilt from source-symbol and repair datagrams after erasures, then split back into
+// props_len:u16 | properties | payload.
 //
 //   node --test test/media.test.ts
 

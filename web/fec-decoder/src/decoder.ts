@@ -1,10 +1,10 @@
-// Decoder for the ISA-L backend of src/fecmoq/codec.py: a systematic Cauchy code over GF(2^8).
+// Decoder for codec 2 (ISA-L): a systematic Cauchy Reed-Solomon code over GF(2^8).
 // Repair symbol j of a block with k source symbols is matrix row i = k + j, whose coefficient for
 // source column c is gf_inv(i XOR c) (ISA-L gf_gen_cauchy1_matrix). Row k + j depends only on
 // (j, k), so a symbol is the same whatever total number of repair symbols was generated.
 //
-// Decoding solves only for the e erased source symbols, as codec.py does: take the e lowest-indexed
-// repair symbols received, compute the syndrome s = repair + C[R, known] * known, then
+// Decoding solves only for the e erased source symbols: take the e lowest-indexed repair symbols
+// received, compute the syndrome s = repair + C[R, known] * known, then
 // missing = inverse(C[R, missing]) * s.
 
 import { inv, invertMatrix, mulAddInto } from "./gf256.ts";

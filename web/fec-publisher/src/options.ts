@@ -1,5 +1,5 @@
-// The publisher's command-line options (src/cli.ts). Pacing is on by default, unlike relay_fec.py's
-// 0: back to back, FAILS loses datagrams at a realistic bitrate (README, "Pacing").
+// The publisher's command-line options (src/cli.ts). Pacing is on by default: back to back, FAILS
+// loses datagrams at a realistic bitrate (README, "Pacing").
 
 export const PUBLISHER_OPTIONS = {
   url: { type: "string" }, hash: { type: "string" }, ns: { type: "string" }, media: { type: "string" },

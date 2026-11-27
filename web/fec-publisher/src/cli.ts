@@ -1,6 +1,6 @@
 // node src/cli.ts --url https://127.0.0.1:4473/moq-relay --hash HEX --ns NS --media clip.mp4 [--rungs 0.15,0.15,0.15]
 // [--drop-src 0.05] [--seed 7] [--pace-source 0.5] [--pace-repair 0.4] [--secs 60]
-// Pacing is on by default (0.5 / 0.4); --pace-source 0 --pace-repair 0 sends back to back, as relay_fec.py's default.
+// Pacing is on by default (0.5 / 0.4); --pace-source 0 --pace-repair 0 sends back to back.
 
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -44,7 +44,7 @@ const pub = new FecPublisher({
   drop: sourceDropper(Number(a["drop-src"]), Number(a.seed)),
   paceSource: Number(a["pace-source"]), paceRepair: Number(a["pace-repair"]),
   log: say,
-  // As relay_fec.py's SESSION-DEAD: a publisher whose session is gone exits with status 4.
+  // SESSION-DEAD: a publisher whose session is gone exits with status 4.
   onFatal: () => void stop(4),
 });
 const stats = setInterval(() => void pub.quicSummary().then((q) => say(`STATS ${pub.summary()}; ${q}`)), 5000);

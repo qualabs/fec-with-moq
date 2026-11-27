@@ -1,7 +1,6 @@
-// The publisher's object production against the Python publisher's bytes: web/fec-decoder's
-// media-vectors.json (scripts/fec_media_vectors.py, from media.py's MediaBlockSchedule and moq.py's
-// rung_slices / pack_repair) holds real AV1 frames, their LOC objects, the src datagrams and the
-// repair datagrams of three 0.15 rungs.
+// The publisher's object production against the reference vectors: web/fec-decoder's
+// media-vectors.json holds real AV1 frames, their LOC objects, the src datagrams and the repair
+// datagrams of three 0.15 rungs.
 //
 //   node --test test/producer.test.ts
 
@@ -24,7 +23,7 @@ const RUNGS = [0.15, 0.15, 0.15];
 for (const b of V.blocks) {
   const objects = b.objects.map(bytes);
 
-  test(`block ${b.block}: LOC objects as media.py packs them`, () => {
+  test(`block ${b.block}: LOC objects equal the reference objects`, () => {
     objects.forEach((o, i) => {
       const { props, payload } = unpackLocObject(o);
       assert.deepEqual(payload, bytes(b.frames[i]));

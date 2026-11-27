@@ -1,4 +1,4 @@
-// The plain track, for players without FEC, as media.py's PlainTrack: the same frames and LOC
+// The plain track, for players without FEC: the same frames and LOC
 // timestamps as the source symbols, one frame per object, the timestamp as the object's property
 // (draft-18 encoding) and the frame as its payload. Group = the source's group (a GOP); block b is the
 // group's q-th block and its frame i is object q * n + i, so a group's objects are 0 .. GOP - 1.
