@@ -86,6 +86,8 @@ export class FecPublisher {
   /** Each plain subscription's open subgroup stream. */
   private readonly plainStreams = new Map<Sub, { group: number; stream: bigint }>();
   private plainQueue: Promise<void> = Promise.resolve();
+  /** The datagram writes, one at a time: the session's datagram stream takes one writer at a time. */
+  private datagramWrites: Promise<void> = Promise.resolve();
   /** Each rung's repair, one block after the other (paced); one queue for all rungs when unpaced. */
   private readonly repairQueues = new Map<string, Promise<void>>();
   /** Blocks started, those whose source started late, and the latest start after a slot (ms). */
@@ -279,12 +281,23 @@ export class FecPublisher {
     for (const s of [...this.subs.get(d.track)!]) {
       if (!s.ready || b < s.fromBlock || !admits(s.window, d.group, d.object)) continue;
       try {
-        await this.conn.sendDatagram(s.alias, BigInt(d.group), BigInt(d.object), d.payload, { requestId: s.requestId });
+        await this.writeDatagram(() => this.conn.sendDatagram(s.alias, BigInt(d.group), BigInt(d.object), d.payload,
+          { requestId: s.requestId }));
         n.sent++;
       } catch (e) {
         this.failed(d.track, n, `datagram ${d.group}.${d.object}: ${(e as Error).message}`);
       }
     }
+  }
+
+  /**
+   * One datagram write after the ones already queued. The source and the rungs' tasks send at the
+   * same time; two writes at once would find the datagram stream's writer taken and fail.
+   */
+  private writeDatagram(write: () => Promise<void>): Promise<void> {
+    const w = this.datagramWrites.then(write);
+    this.datagramWrites = w.catch(() => {});
+    return w;
   }
 
   private async runBlocks(): Promise<void> {

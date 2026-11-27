@@ -54,11 +54,15 @@ class FakeConn {
     this.accepted.set(id, { alias, largest: o?.parameters?.get(MessageParam.LARGEST_OBJECT)?.[0] as Location | undefined });
   }
   async rejectSubscribe() {}
+  /** A write in progress: as the session's datagram writer, a second one at once fails. */
+  private writing = false;
   async sendDatagram(alias: bigint, group: bigint, object: bigint) {
+    if (this.writing) throw new Error("Invalid state: WritableStream is locked");
     const d = { alias, group, object };
     const at = performance.now();
     const ms = this.delay(d);
-    if (ms) await new Promise((r) => setTimeout(r, ms));
+    this.writing = true;
+    try { if (ms) await new Promise((r) => setTimeout(r, ms)); } finally { this.writing = false; }
     this.onDatagram(d);
     this.datagrams.push(d);
     this.times.push(at);
@@ -226,22 +230,26 @@ async function paced(o: { paceSource: number; paceRepair: number; lateMs?: numbe
 }
 
 test("pacing: a block's slow repair doesn't delay the next block's source", async () => {
-  // every repair datagram takes 40 ms to write: a block's 3 x 2 repair datagrams, one after the
-  // other, would take 240 ms, more than the 100 ms block period
+  // every repair datagram takes 15 ms to write: after the block's 50 ms of source, its 3 x 2 repair
+  // datagrams one after the other would end past the next block's slot
   const { pub, sent, lines } = await paced({ paceSource: 0.5, paceRepair: 0.4 },
-    (c) => { c.delay = (d) => (d.alias === c.accepted.get(0n)!.alias ? 0 : 40); });
+    (c) => { c.delay = (d) => (d.alias === c.accepted.get(0n)!.alias ? 0 : 15); });
   for (let b = 0; b < 4; b++) {
+    // at most the three rungs' writes in progress ahead of it
     const first = sent.find((d) => d.track === "src" && d.block === b)!;
-    assert.ok(first.at - b * 100 < 45, `block ${b}'s source started ${first.at - b * 100} ms after its slot`);
+    assert.ok(first.at - b * 100 < 60, `block ${b}'s source started ${first.at - b * 100} ms after its slot`);
   }
   assert.equal(pub.blocksStarted.late, 0);
+  // every datagram written: no two writes at once
+  assert.equal(sent.length, 4 * (sent.filter((d) => d.block === 0).length));
+  for (const t of ["src", "rep1", "rep2", "rep3"]) assert.equal(pub.counters.get(t)!.failed, 0);
   assert.equal(lines.filter((l) => l.startsWith("LATE")).length, 0);
   assert.match(pub.summary(), /^blocks 4 late 0 /);
 });
 
 test("pacing: within a block the source goes first, and each rung sends its blocks in order", async () => {
   const { sent } = await paced({ paceSource: 0.5, paceRepair: 0.4 },
-    (c) => { c.delay = (d) => (d.alias === c.accepted.get(0n)!.alias ? 0 : 40); });
+    (c) => { c.delay = (d) => (d.alias === c.accepted.get(0n)!.alias ? 0 : 15); });
   for (let b = 0; b < 4; b++) {
     const lastSrc = sent.map((d) => d.track === "src" && d.block === b).lastIndexOf(true);
     const firstRep = sent.findIndex((d) => d.track !== "src" && d.block === b);

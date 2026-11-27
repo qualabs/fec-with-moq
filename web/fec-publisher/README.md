@@ -25,7 +25,9 @@ How it sends:
 - **Source before repair, and before encoding.** A block's `src` datagrams are all sent before its
   repair is encoded (`blockDatagrams` is a generator), then each rung's repair follows as a task of
   its own: the next block's source starts at its slot whatever a rung still has to send of the block
-  before. A rung sends its blocks in order; unpaced, the rungs share one queue, in rung order.
+  before. A rung sends its blocks in order; unpaced, the rungs share one queue, in rung order. The
+  datagram writes themselves go one at a time, in the order they are asked for: the session's
+  datagram stream takes one writer at a time.
 - **Pacing, on by default.** `--pace-source F` spreads a block's source over F of the block period and
   `--pace-repair F` each rung's repair over F of it, from when the rung starts the block (after its
   source). The defaults are 0.5 and 0.4; `--pace-source 0 --pace-repair 0` sends back to back. The two
