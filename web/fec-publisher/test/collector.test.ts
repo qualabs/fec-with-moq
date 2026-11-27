@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { countedBlocks, type Arrival } from "../src/collector.ts";
+import { countedBlocks, leastLastBlock, type Arrival } from "../src/collector.ts";
 
 const span = (track: string, from: number, to: number, at: number): Arrival[] =>
   Array.from({ length: to - from + 1 }, (_, i) => ({ track, block: from + i, at }));
@@ -27,4 +27,10 @@ test("a block missing on one track after the join is still counted", () => {
 
 test("a track that delivered nothing: no block is counted", () => {
   assert.deepEqual(countedBlocks(span("src", 1, 9, 20), ["src", "rep1"], 10), []);
+});
+
+test("leastLastBlock: 32 s at 0.2 s a block from the first block after SUBSCRIBE_OK, less 5 % and 3", () => {
+  const arrivals = [...span("src", 10, 11, 5), ...span("src", 12, 200, 20)];
+  assert.equal(leastLastBlock(arrivals, 10, 32, 0.2), 12 + 152 - 3);
+  assert.equal(leastLastBlock(span("src", 1, 9, 5), 10, 32, 0.2), undefined);
 });

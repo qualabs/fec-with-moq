@@ -4,8 +4,10 @@
 // taken rung's slice, from the catalog and the clip). Only blocks from the first one where src and
 // every taken rung have delivered a datagram, after the last rung's SUBSCRIBE_OK and before the last
 // one seen are counted (countedBlocks); a block in that range with no datagram at all is lost.
-// Prints one JSON summary; exits 1 if src or a taken rung delivered no datagram, a frame differs, or
-// a check asked for with --expect-all / --expect-recovered fails.
+// Prints one JSON summary; exits 1 if src or a taken rung delivered no datagram, no block was
+// counted, the last counted block falls short of what --secs at the catalog's block period should
+// reach (leastLastBlock), a frame differs, or a check asked for with --expect-all /
+// --expect-recovered fails.
 //
 //   node scripts/subscribe-check.ts --url URL --hash HEX --ns NS --media CLIP.mp4 [--take 3] [--secs 15]
 //     [--expect-all] [--expect-recovered MIN] [--blocks-out FILE]
@@ -18,7 +20,7 @@ import { parseArgs } from "node:util";
 import { layoutBlock } from "fec-decoder/src/layout.ts";
 import { address, rungSlices } from "fec-decoder/src/schedule.ts";
 import { connect } from "../src/connect.ts";
-import { BlockCollector, countedBlocks, type Arrival } from "../src/collector.ts";
+import { BlockCollector, countedBlocks, leastLastBlock, type Arrival } from "../src/collector.ts";
 import { MediaBlocks, unpackLocObject } from "../src/media.ts";
 import { readVideoTrack } from "../src/mp4.ts";
 import { SOURCE_TRACK } from "../src/producer.ts";
@@ -68,7 +70,8 @@ const gotCatalog = new Promise<void>((resolve) => {
 await Promise.race([gotCatalog, new Promise((_, rej) => setTimeout(() => rej(new Error("no catalog in 10 s")), 10_000))]);
 
 const src = catalog!.tracks.find((t) => t.packaging === "x-fec-source")!;
-const fec = src["x-fec"] as { blocksPerGroup: number; blockObjects: number; rungs: string[]; rungFractions: number[] };
+const fec = src["x-fec"] as { blocksPerGroup: number; blockObjects: number; blockSeconds: number; rungs: string[];
+  rungFractions: number[] };
 const take = Math.min(Number(a.take), fec.rungs.length);
 const want = [SOURCE_TRACK, ...fec.rungs.slice(0, take)];
 for (const name of want) {
@@ -140,6 +143,11 @@ for (const b of ids) {
 
 const failures: string[] = [];
 for (const t of want) if (!counts[t]) failures.push(`no ${t} datagram`);
+if (ids.length === 0) failures.push("no block counted");
+const least = leastLastBlock(arrivals, tReady, Number(a.secs), fec.blockSeconds);
+if (ids.length && least !== undefined && ids.at(-1)! < least) {
+  failures.push(`last counted block ${ids.at(-1)} short of ${least} (${a.secs} s at ${fec.blockSeconds} s a block)`);
+}
 if (tally.frameMismatch) failures.push(`${tally.frameMismatch} frame(s) differ from the clip`);
 if (a["expect-all"] && sent.received < sent.expected) failures.push(`${sent.expected - sent.received} datagram(s) missing`);
 if (a["expect-recovered"] !== undefined) {
@@ -148,6 +156,7 @@ if (a["expect-recovered"] !== undefined) {
 }
 const out = {
   tracks: counts, blocksChecked: ids.length, firstBlock: ids[0] ?? null, lastBlock: ids.at(-1) ?? null,
+  leastLastBlock: least ?? null,
   ...tally, malformed: collector.malformed, datagrams: sent, shortDetail, lostDetail: lostDetail.slice(0, 20),
   ok: failures.length === 0, failures,
 };

@@ -156,7 +156,9 @@ Counted are the blocks from the first one where `src` and every taken rung have 
 datagram, after every block that had a datagram before the last rung's SUBSCRIBE_OK, and before the
 last block seen. moqx can start a late subscriber's rungs one or more groups after its `src`; the
 blocks before that are the join, not losses. It exits 1 if `src` or a taken rung delivered no
-datagram, a frame differs from the clip's, or a check it was asked for fails: `--expect-all` (every datagram sent arrived; at `--drop-src 0`),
+datagram, no block was counted, the last counted block falls short of what `--secs` at the catalog's
+block period should reach from the first block after the last SUBSCRIBE_OK (`leastLastBlock`: 5 % and
+3 blocks of slack), a frame differs from the clip's, or a check it was asked for fails: `--expect-all` (every datagram sent arrived; at `--drop-src 0`),
 `--expect-recovered MIN` (at least MIN blocks recovered and none lost).
 
 ```sh

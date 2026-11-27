@@ -73,3 +73,15 @@ export function countedBlocks(arrivals: Arrival[], tracks: string[], ready: numb
   const first = Math.max(joined, 1 + (beforeReady >= 0 ? beforeReady : firstAfter));
   return Array.from({ length: Math.max(0, last - first) }, (_, i) => first + i);
 }
+
+/**
+ * The least last counted block of a subscriber that listened `secs` seconds after `ready`: from the
+ * first block that arrived after `ready`, one block per `blockS` seconds, less `slack` of them and
+ * three blocks (the one cut by the stop, and two for the timers). Undefined if nothing arrived after
+ * `ready`. A last counted block short of it means the tracks stopped arriving before the end.
+ */
+export function leastLastBlock(arrivals: Arrival[], ready: number, secs: number, blockS: number, slack = 0.05): number | undefined {
+  let first = Infinity;
+  for (const { block, at } of arrivals) if (at >= ready) first = Math.min(first, block);
+  return first === Infinity ? undefined : first + Math.floor(secs / blockS * (1 - slack)) - 3;
+}
