@@ -53,9 +53,11 @@ How it sends:
   their own so a slow stream doesn't hold up the datagrams. Each subscriber gets a subgroup stream per
   group, opened at the group's first object with FIRST_OBJECT and ended with FIN after its last, the
   header's END_OF_GROUP bit set; Python's aiomoqt instead ends a group's stream with an END_OF_GROUP
-  status object when the next group starts. A subscriber joins at the next group start, as aiomoqt's
-  lanes do (moqx subscribes with LargestObject, so it starts at the next GOP), unless its filter names
-  a start Location (AbsoluteStart, AbsoluteRange), where a stream may open mid-group. A stream cut by
+  status object when the next group starts. A new subscriber to `video` starts at the next group
+  start, also under LargestObject, whose window would otherwise open mid-group: a decision (Ismael,
+  2026-11-27), so that a player without FEC starts at a key frame. It matches aiomoqt's lanes, and moqx
+  subscribes with LargestObject, so through moqx a player starts at the next GOP. Only a filter that
+  names a start Location (AbsoluteStart, AbsoluteRange) can open a stream mid-group. A stream cut by
   `stop()` mid-group is reset, not ended with FIN.
 - **Session lifecycle.** A subscription is registered before its SUBSCRIBE_OK is written, and gets
   datagrams once it is accepted. Send failures are logged at the first one and then at most every 5 s
